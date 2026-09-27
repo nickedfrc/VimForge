@@ -26,6 +26,7 @@ endorsed by the Neovim, Vim, Neovide or DeepSeek projects. See [CREDITS.md](CRED
 |---|---|
 | [docs/INSTALL.md](docs/INSTALL.md) | **Windows / macOS / Linux**: installers, manual install, per-platform dependencies, verification, uninstall |
 | [docs/ACP.md](docs/ACP.md) | The verified ACP wire contract used to talk to DeepSeek Harness |
+| [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Measured costs, the idle-loop and parser-probe fixes, and where the remaining time goes |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Every failure mode we have hit, and its fix |
 | [docs/DEVELOPING.md](docs/DEVELOPING.md) | Architecture, load order, concurrency rules, testing |
 | [docs/MIGRATING.md](docs/MIGRATING.md) | Porting your own vimrc/keymaps here |

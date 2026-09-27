@@ -160,12 +160,20 @@ local function chunked(files, step, finish, on_done)
   local total = #files
 
   if type(on_done) ~= 'function' then
+    -- Synchronous path: run straight through, in batches, with NO yield.
+    --
+    -- This used to call `vim.wait(1, function() return false end)` after each
+    -- batch as a courtesy yield. Measured on an 8-file project it cost ~1 second
+    -- per batch - 3 seconds of pure idle for 2 ms of actual scanning - because
+    -- vim.wait processes the event loop and can overshoot its timeout by orders of
+    -- magnitude. Nothing between batches needs the loop: it is plain Lua plus file
+    -- reads, so the yield is removed rather than shortened. Callers that need the
+    -- UI to stay responsive pass an `on_done` callback and get the chunked path.
     local i = 1
     while i <= total do
       local stop = math.min(i + BATCH - 1, total)
       for j = i, stop do pcall(step, j) end
       i = stop + 1
-      pcall(vim.wait, 1, function() return false end)
     end
     if finish then pcall(finish) end
     return false

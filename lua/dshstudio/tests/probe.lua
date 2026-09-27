@@ -675,6 +675,61 @@ local function test_approval_mode()
   eq(session.approval_mode(), original, 'the original mode is restored')
 end
 
+---The call graph must attribute a call to the function that actually makes it.
+---File-level attribution produced backwards edges (a symbol appearing to call the
+---`main` that calls it, because both lived in one file), which made the program
+---tree useless.
+local function test_call_graph_attribution()
+  local static = require('dshstudio.project.static')
+
+  -- Two callables in one file: `helper` is called by `caller`, and `caller` is the
+  -- entry point. Symbol ranges decide the attribution.
+  local symbols_by_file = {
+    ['demo.f90'] = {
+      { name = 'demo_mod', kind = 'module', line = 1, end_line = 20 },
+      { name = 'helper', kind = 'function', line = 4, end_line = 6, parent = 'demo_mod' },
+      { name = 'caller', kind = 'subroutine', line = 8, end_line = 12, parent = 'demo_mod' },
+    },
+  }
+
+  local deps = {
+    fortran = {
+      calls = {
+        -- Recorded with the call site's line, which is what makes per-symbol
+        -- attribution possible.
+        helper = { count = 1, files = { 'demo.f90' }, lines = { { file = 'demo.f90', line = 10 } } },
+      },
+      uses = {}, includes = {}, modules = {},
+    },
+  }
+
+  local graph = static.call_graph(deps, symbols_by_file)
+
+  local caller = graph.caller or {}
+  local helper = graph.helper or {}
+  ok((caller.calls or {})[1] == 'helper',
+    'the enclosing function is credited with the call it makes')
+  ok((helper.called_by or {})[1] == 'caller',
+    'the callee records the enclosing caller, not the whole file')
+  ok(not (helper.calls and #helper.calls > 0),
+    'the callee is not credited with a call it does not make')
+
+  -- Without a recorded line the scanner falls back to file-level attribution,
+  -- which must still produce an edge rather than nothing.
+  local deps_no_line = {
+    fortran = {
+      calls = { helper = { count = 1, files = { 'demo.f90' }, lines = {} } },
+      uses = {}, includes = {}, modules = {},
+    },
+  }
+  local g2 = static.call_graph(deps_no_line, symbols_by_file)
+  local any_edge = false
+  for _, entry in pairs(g2) do
+    if #(entry.calls or {}) > 0 then any_edge = true end
+  end
+  ok(any_edge, 'a call site with no line still yields an edge')
+end
+
 local function test_agent_discovery()
   local session = require('dshstudio.core.session')
   local argv, how = session.resolve_agent_command('acp')
@@ -741,6 +796,7 @@ local ALL = {
   ['headless: system output normalisation'] = test_headless_output_normalisation,
   ['symbols: BOM tolerance and module nesting'] = test_symbols_bom_and_merge,
   ['session: agent discovery'] = test_agent_discovery,
+  ['project: call graph attribution'] = test_call_graph_attribution,
   ['session: approval mode'] = test_approval_mode,
   ['session: workspace detection'] = test_workspace_detection,
   ['auth: keys, agent env and credential file'] = test_auth_keys,

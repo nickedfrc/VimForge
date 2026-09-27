@@ -1,0 +1,117 @@
+-- Personal overrides for DSH Studio.
+--
+-- Copy this file to `user.lua` (same directory) and edit that copy. `user.lua`
+-- is loaded last, after every built-in module, and is the supported place for
+-- personal changes: it survives updates to the distribution and never needs the
+-- upstream files to be edited.
+--
+-- Load order:
+--   config.setup -> editor -> treesitter -> lsp -> lang -> keymaps -> user.lua
+--
+-- Anything here runs after the defaults, so it wins.
+
+-- ---------------------------------------------------------------------------
+-- 1. Settings: the simplest way to change behaviour
+-- ---------------------------------------------------------------------------
+-- vim.g.dshstudio = {
+--   auto_context = false,             -- stop injecting the current file
+--   sidebar_width = 60,
+--   auto_approve = 'always',          -- let the agent run tools without asking
+--   model = '["deepseek-official","deepseek-v4-pro"]',
+--   reasoning_effort = 'max',
+--   fortran_include_dirs = { 'include', 'build/mod' },
+--   extra_include_dirs = { 'include', 'third_party', 'extern' },
+-- }
+
+-- ---------------------------------------------------------------------------
+-- 2. Keymaps
+-- ---------------------------------------------------------------------------
+-- The defaults use <Space> as <leader>. Override or add freely.
+--
+-- local map = vim.keymap.set
+-- map('n', '<leader>qq', '<cmd>qa<cr>', { desc = 'Quit' })
+--
+-- Migrating from your own vimrc? Most personal maps port unchanged:
+--   vimrc:  nnoremap <leader>w :w<CR>
+--   here:   map('n', '<leader>w', '<cmd>w<cr>', { desc = 'Write' })
+-- The common translation table is in docs/MIGRATING.md.
+
+-- ---------------------------------------------------------------------------
+-- 3. Extra plugins
+-- ---------------------------------------------------------------------------
+-- lazy.nvim is already bootstrapped, so add specs the normal way:
+--
+-- require('lazy').setup({
+--   {
+--     'your/plugin',
+--     event = 'VeryLazy',
+--     opts = { ... },
+--   },
+-- }, { defaults = { lazy = true } })
+
+-- ---------------------------------------------------------------------------
+-- 4. Hook into the DeepSeek panel
+-- ---------------------------------------------------------------------------
+-- The session module emits events you can subscribe to:
+--
+-- local session = require('dshstudio.core.session')
+-- session.on('messages_changed', function(messages) end)
+-- session.on('turn_end', function(stop_reason) end)
+-- session.on('tool_event', function(update) end)
+-- session.on('busy', function(is_busy) end)
+-- session.on('connected', function(ok, err) end)
+--
+-- Example: log every completed turn into a project journal.
+-- local uv = vim.uv or vim.loop
+-- local journal = vim.fn.stdpath('state') .. '/dshstudio-journal.md'
+-- session.on('turn_end', function(_)
+--   local msgs = session.get_messages()
+--   local last = msgs[#msgs]
+--   if not last or last.role ~= 'agent' then return end
+--   local fh = io.open(journal, 'a')
+--   if fh then
+--     fh:write(('\n## %s\n\n%s\n'):format(os.date('%Y-%m-%d %H:%M'), last.text))
+--     fh:close()
+--   end
+-- end)
+
+-- ---------------------------------------------------------------------------
+-- 5. Bring your own highlighting
+-- ---------------------------------------------------------------------------
+-- Tree-sitter highlighting is enabled for the configured filetypes. To restore
+-- classic regex-based Vim highlighting for a filetype (useful when a parser
+-- disagrees with your Fortran dialect):
+--
+-- vim.api.nvim_create_autocmd('FileType', {
+--   pattern = 'fortran',
+--   callback = function()
+--     vim.treesitter.stop(0)
+--     vim.bo.syntax = 'fortran'      -- fall back to the built-in syntax file
+--   end,
+-- })
+--
+-- To add a colourscheme, install it in section 3 and select it here:
+-- vim.cmd.colorscheme('gruvbox')
+
+-- ---------------------------------------------------------------------------
+-- 6. Navigation fallbacks
+-- ---------------------------------------------------------------------------
+-- If your project has no language server, these maps give you a tags-based
+-- fallback for jumping. (`:DshProjectSymbols` also offers a project-wide list
+-- without any server.)
+--
+-- local function ctags_jump(word, mode)
+--   if vim.fn.executable('ctags') == 0 then
+--     vim.notify('universal-ctags is not installed', vim.log.levels.WARN)
+--     return
+--   end
+--   if vim.fn.filereadable('tags') == 0 then
+--     vim.notify('no tags file — run: ctags -R .', vim.log.levels.WARN)
+--     return
+--   end
+--   local opts = mode == 'split' and { jumpto = true, mode = 'S' } or { jumpto = true }
+--   vim.fn.taglist('^' .. vim.fn.escape(word, '/.*$^~[]') .. '$')
+--   if mode == 'split' then vim.cmd('tag ' .. word) else vim.cmd('tag ' .. word) end
+-- end
+
+return {}

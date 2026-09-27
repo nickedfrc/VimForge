@@ -1,0 +1,26 @@
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Neovim runtime state when the config is used in place
+lazy-lock.json.bak
+.nvim/
+
+# Generated analysis reports
+.dshstudio/
+*.analysis.md
+
+# Personal overrides (copy user.example.lua to create this)
+nvim-deepseek-studio/lua/dshstudio/user.lua
+
+# Installer scratch
+/tmp/
+/DSH-Studio-*.AppImage
+
+# Node (only used for the syntax checker in tests/)
+node_modules/

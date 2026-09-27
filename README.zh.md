@@ -1,4 +1,4 @@
-﻿# VimForge · DSH Studio 中文说明
+# VimForge · DSH Studio 中文说明
 
 **一个真正能用的 Vim 编辑器 —— 内置 DeepSeek Harness。**
 
@@ -85,6 +85,56 @@
 - 工具执行前弹权限确认，可配置 `auto_approve`
 - `<leader>di` 把回复插入到文件，`<leader>dy` 复制到剪贴板
 - `:DshSessions` 列出并恢复历史会话；`<leader>dq` 取消正在进行的回合
+
+### 模型与 API Key（自己选模型、自己填 Key）
+
+模型由你选，Key 由你填。**编辑器不另存一份密钥**——所有东西都放在 Harness 自己的位置，
+不会出现"以后找不到存在哪了"的情况。
+
+**选模型。** `<leader>dm` 列出 Harness 当前公布的全部模型，按 provider 分组。
+没有可用 Key 的 provider，其选项会标注 `⚠ no key`，让失败可预期；
+选中它时会直接问你要不要现在补 Key。
+
+**填 Key。** `:DshAuth` 把 Key 写进 Harness 官方凭证存储
+（`$DSH_HOME/.credentials.yaml` 的 `refs:` 段）——和 Harness 自己的工具写的是同一个地方，
+所以这个 Key 对所有 Harness 界面都生效，不只是本编辑器。
+首次修改前会自动备份，注释行会保留；存储是热重载的，所以**下一条请求就生效，不用重启**。
+`:DshProviders` 查看状态表。
+
+Key 的优先级就是 Harness 的规则：**启动环境变量 → 存储文件 → 项目 `.env` → Harness 家目录 `.env`**。
+也就是说你手动 export 的变量依然优先，CI 场景正是想要这个行为。
+
+```
+:DshAuth              交互式管理 Key
+:DshProviders         查看 provider 与 Key 状态
+:DshModel             切换模型
+:DshEffort            切换推理强度
+```
+
+**加自己的 provider。** 出厂只路由了 DeepSeek 和 Xiaomi。
+要接入任何 OpenAI 兼容网关或其他 pi-ai provider，在 `$DSH_HOME/settings.yaml`
+里按下面的格式声明一条路由（带凭证引用名），然后填 Key 即可——
+编辑器的 provider 列表会自动识别，**即使 agent 还没公布它**：
+
+```yaml
+llm-pi-ai:
+  providers:
+    acme-gateway:
+      displayName: Acme Gateway
+      apiKeyEnv: ACME_GATEWAY_API_KEY      # :DshAuth 会写入这个名字
+      baseURL: https://gateway.example.com/v1
+      api: openai-completions
+agent-default-model:
+  provider: deepseek-official
+  model: deepseek-flash
+```
+
+如果你更习惯用 Harness 自带的界面完成登录（OAuth、交互式 Key），
+在终端跑一次 `dsh` 即可，那边保存的凭证在这里直接可用。
+
+> **关于密钥安全，必须说清楚：** Harness 的 agent 工具进程以**同一个操作系统用户**运行，
+> 所以 agent 能用的 Key，agent 就能读到——文件权限无法把两者隔开。
+> 不要把权限范围超出你愿意交给 agent 的 Key 存进去。
 
 ### 工程解析（deepwiki 式）
 

@@ -295,6 +295,11 @@ local function make_client()
       .. '`npm i -g @deepseek-ai/dsh`, or set `agent_command` in your DSH Studio config.'
   end
 
+  -- Credentials are NOT injected here. The harness owns that problem: its
+  -- credential store watches `$DSH_HOME/.credentials.yaml` and reloads on change,
+  -- and the launch environment outranks the store. Passing keys in from the
+  -- editor would add a second source of truth and mask a key the user set with
+  -- the harness' own tooling. `core/auth.lua` writes to that store instead.
   local client = require('dshstudio.core.acp').new({
     command = vim.list_extend({}, argv),
     cwd = state.cwd,
@@ -751,8 +756,10 @@ function M.prompt(text, on_done)
         state.last_error = m
         local lower = m:lower()
         if lower:find('401') or lower:find('api key') or lower:find('unauthor') then
-          m = m .. '\n\nHint: the selected model provider rejected the request. Run `dsh` once in a '
-            .. 'terminal to sign in, or choose a different model with <leader>dm.'
+          m = m .. '\n\nHint: the selected model provider rejected the request. Either'
+            .. '\n  * set its key from here:  :DshAuth     (see :DshProviders for status), or'
+            .. '\n  * choose a model from a provider that is already signed in: <leader>dm, or'
+            .. '\n  * run `dsh` once in a terminal to sign in.'
         end
         M.add_message('system', m, { kind = 'error' })
         on_done(false, nil, m)

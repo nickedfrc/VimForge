@@ -139,6 +139,25 @@ nvim -u ./nvim-deepseek-studio/init.lua
 | DeepSeek Harness | AI 功能 | `npm i -g @deepseek-ai/dsh` |
 | git | 下载插件 | 安装脚本/包管理器 |
 
+### AI 凭证（模型 Key）
+
+Harness 需要每个 provider 一个 API Key。编辑器会写进 Harness 自己的存储，
+不需要你另外配什么东西：
+
+```vim
+:DshAuth          " 选 provider、填 Key
+:DshProviders     " 看哪些 provider 已有 Key、各自有哪些模型
+:DshModel         " 选模型
+```
+
+优先级从高到低：shell 里 export 的变量 → Harness 存储
+（`$DSH_HOME/.credentials.yaml`）→ 项目 `.env` → `$DSH_HOME/.env`。
+所以 CI 里 export 一个 Key 会覆盖开发机本地保存的，甚至完全可以不落盘。
+
+要接入出厂 DeepSeek / Xiaomi 之外的 provider，在 `$DSH_HOME/settings.yaml`
+里声明一条带 `apiKeyEnv` 引用的 pi-ai 路由，再用 `:DshAuth` 填那个变量。
+详见 README 的"模型与 API Key"一节。
+
 ### 语言服务器
 
 | 语言 | Windows | macOS | Linux |

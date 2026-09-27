@@ -518,6 +518,29 @@ function M.setup()
   map('n', '<leader>dH', function()
     vim.cmd('DshHealth')
   end, 'Environment health report')
+  map('n', '<leader>dk', function()
+    try_list({
+      { 'dshstudio.core.auth', 'manage' },
+    })
+  end, 'Manage model providers / API keys')
+  map('n', '<leader>dK', function()
+    local ok, auth = pcall(require, 'dshstudio.core.auth')
+    if not ok then
+      vim.notify('auth module unavailable: ' .. tostring(auth), vim.log.levels.ERROR)
+      return
+    end
+    local providers = auth.providers()
+    if #providers == 0 then
+      vim.notify('no providers advertised yet — open the panel once (<leader>dd)', vim.log.levels.WARN)
+      return
+    end
+    local lines = {}
+    for _, p in ipairs(providers) do
+      lines[#lines + 1] = ('%s: key %s (%s), %d models'):format(
+        p.label or p.provider, p.key_set and 'SET' or 'missing', p.key_source or '-', #p.models)
+    end
+    vim.notify(table.concat(lines, '\n'), vim.log.levels.INFO, { title = 'DSH providers' })
+  end, 'Provider and key status')
 
   -- Outline and project tree ------------------------------------------------
   map('n', '<leader>ot', function()

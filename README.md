@@ -1,4 +1,4 @@
-﻿<div align="center">
+<div align="center">
 
 # VimForge
 
@@ -107,6 +107,61 @@ terminal.
 - `<leader>di` inserts the last reply into the file; `<leader>dy` copies it
 - Session history: `:DshSessions` lists and resumes persisted conversations
 - `<leader>dq` cancels a running turn
+
+### Models and API keys
+
+You choose the model, and you supply the key. There is no editor-private key store
+to hunt for later: everything lives where the harness keeps it.
+
+**Choosing a model.** `<leader>dm` lists every model the harness advertises, grouped
+by provider. Options from a provider with no usable key are marked `⚠ no key` so a
+failure is predictable rather than surprising, and picking one offers to set the key
+straight away.
+
+**Setting an API key.** `:DshAuth` writes it into the harness credential store
+(`$DSH_HOME/.credentials.yaml`, its `refs:` section) — the same place the harness'
+own tooling writes, so the key is visible to every harness surface, not just this
+editor. A timestamped backup is taken before the first change in a session, comment
+lines are preserved, and the store reloads on change, so the key applies to the next
+request without a restart. `:DshProviders` shows the status table.
+
+Key precedence is the harness': **launch environment → stored file → project `.env`
+→ harness-home `.env`**. An exported variable therefore still wins over anything
+saved here, which is what you want in CI.
+
+```
+:DshAuth              manage keys (interactive)
+:DshProviders         provider and key status
+:DshModel             choose the model
+:DshEffort            choose the reasoning effort
+```
+
+**Adding another provider.** The shipped composition routes DeepSeek and Xiaomi. To
+add any OpenAI-compatible gateway or another pi-ai provider, declare a route in
+`$DSH_HOME/settings.yaml` with a credential reference, then set the key — the
+editor's provider list picks the route up automatically, even before the agent
+advertises it:
+
+```yaml
+llm-pi-ai:
+  providers:
+    acme-gateway:
+      displayName: Acme Gateway
+      apiKeyEnv: ACME_GATEWAY_API_KEY      # the name :DshAuth will write
+      baseURL: https://gateway.example.com/v1
+      api: openai-completions
+agent-default-model:
+  provider: deepseek-official
+  model: deepseek-flash
+```
+
+If you prefer the harness' own UI for sign-in flows (OAuth, interactive keys), run
+`dsh` in a terminal once; credentials saved there are picked up here unchanged.
+
+> **A note on secret handling.** The harness runs agent tool processes as the same
+> OS user, so an API key the agent can use is one the agent can read — file
+> permissions cannot separate the two. Do not store a key with a wider scope than
+> you would hand to the agent itself.
 
 ### Project analysis ("deepwiki" mode)
 

@@ -240,6 +240,33 @@ function validate(src, file) {
     problems.push(`line ${open.line}: '${open.kind}' is never closed`);
   }
 
+  // Argument-position sanity for the two stdlib calls whose mistakes this
+  // project has actually made:
+  //   table.concat(t)        -- legal, but table.concat(t, nil) is written by
+  //                             accident when a paren slips, and only fails at
+  //                             runtime with "sep: expected string, got nil"
+  //   table.concat(t, '')    -- the intent when no separator is wanted
+  // A closing paren immediately after the table where a separator is required is
+  // the signature of that slip when the call spans lines.
+  const srcLines = src.split('\n');
+  srcLines.forEach((line, index) => {
+    const lineNo = index + 1;
+    // A `table.concat({` opener whose matching close is followed by `,` or `)` in
+    // a way that leaves the separator slot empty is hard to see lexically, so
+    // instead flag the specific text pattern that caused the real bug:
+    //   }, '\n')), something)     <- an extra close before the next argument
+    if (/table\.concat\s*\(\s*\{/.test(line) || /^\s*\},\s*'[^']*'\)\)/.test(line)) {
+      if (/\)\)\s*,/.test(line) || /\)\),/.test(line)) {
+        problems.push(`line ${lineNo}: suspicious '))' after table.concat - possible stray paren shifting the separator argument`);
+      }
+    }
+    // string.format with a format string but no arguments at all.
+    const fmt = /string\.format\s*\(\s*(['"])((?:\\.|(?!\1).)*)\1\s*\)/.exec(line);
+    if (fmt && /%[sdifq%]/.test(fmt[2]) && !/%$/.test(fmt[2])) {
+      problems.push(`line ${lineNo}: string.format has specifiers but no arguments`);
+    }
+  });
+
   return { problems, tokens: tokens.length };
 }
 

@@ -13,6 +13,7 @@ end
 
 local session = safe_require('dshstudio.core.session')
 local headless = safe_require('dshstudio.core.headless')
+local auth = safe_require('dshstudio.core.auth')
 local analysis = safe_require('dshstudio.project.analysis')
 local sidebar = safe_require('dshstudio.ui.sidebar')
 local outline = safe_require('dshstudio.ui.outline')
@@ -121,6 +122,45 @@ if session then
 end
 
 -- ---------------------------------------------------------------------------
+-- Providers and API keys
+-- ---------------------------------------------------------------------------
+
+if auth then
+  define('DshAuth', function(cmd)
+    auth.manage(cmd.args ~= '' and cmd.args or nil)
+  end, { nargs = '?', desc = 'Manage model providers and API keys' })
+  define('DshProviders', function()
+    local providers = auth.providers()
+    if #providers == 0 then
+      notify('no providers advertised yet — open the panel once (<leader>dd) so the '
+        .. 'agent can report its models', vim.log.levels.WARN)
+      return
+    end
+    vim.ui.select(providers, {
+      prompt = 'Provider (pick one to configure its API key)',
+      format_item = function(p)
+        return ('%s  [%s]  key: %s  ·  %d model%s'):format(
+          p.label or p.provider, p.provider,
+          p.key_set and (p.key_source or 'set') or 'NOT SET',
+          #p.models, #p.models == 1 and '' or 's')
+      end,
+    }, function(choice)
+      if not choice then return end
+      auth.manage(choice.provider)
+    end)
+  end, { desc = 'List model providers and their key status' })
+end
+
+if session then
+  define('DshModel', function()
+    if sidebar then sidebar.pick_model() else session.pick_model() end
+  end, { desc = 'Choose the model' })
+  define('DshEffort', function()
+    if sidebar and sidebar.pick_effort then sidebar.pick_effort() end
+  end, { desc = 'Choose the reasoning effort' })
+end
+
+-- ---------------------------------------------------------------------------
 -- Project analysis
 -- ---------------------------------------------------------------------------
 
@@ -195,6 +235,19 @@ define('DshHealth', function()
     argv, how = headless.resolve_argv('headless')
   end
   add(('Harness CLI: %s (via %s)'):format(argv and table.concat(argv, ' ') or 'NOT FOUND', tostring(how)))
+  add('')
+  add('## Model providers and API keys')
+  if auth and auth.status_lines then
+    local ok_auth, lines = pcall(auth.status_lines)
+    if ok_auth and type(lines) == 'table' then
+      for _, line in ipairs(lines) do add(line) end
+    else
+      add('- auth module reported an error')
+    end
+    add('- configure with :DshAuth (model selection: :DshModel)')
+  else
+    add('- auth module unavailable')
+  end
   add('')
   add('## Language servers')
   local ok_lsp, lsp = pcall(require, 'dshstudio.lsp')

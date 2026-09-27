@@ -22,5 +22,15 @@ nvim-deepseek-studio/lua/dshstudio/user.lua
 /tmp/
 /DSH-Studio-*.AppImage
 
+# Release bundles built by scripts/build_release_bundles.mjs. These are published
+# as release assets (they embed a ~12-30 MB Neovim runtime), never committed.
+/dist/
+
 # Node (only used for the syntax checker in tests/)
 node_modules/
+
+# CI workflow. Kept out of git because a personal access token without the
+# `workflow` scope cannot create files under .github/workflows/. The exact file to
+# copy into .github/workflows/ci.yml is docs/ci.yml - see the README.
+/.github/
+

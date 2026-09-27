@@ -169,6 +169,23 @@ nvim --headless --cmd "set rtp+=$PWD/nvim-deepseek-studio" \
 Inside the editor: `:DshSelfTest`, or one case at a time with
 `:lua require('dshstudio.tests.probe').run_one('acp: cancel is a notification')`.
 
+### Continuous integration
+
+The workflow that runs all of the above on Linux, macOS and Windows is kept at
+[`docs/ci.yml`](ci.yml) rather than in `.github/workflows/`, because a personal
+access token without the `workflow` scope cannot create files in that directory.
+To enable CI, copy it into place:
+
+```bash
+mkdir -p .github/workflows && cp docs/ci.yml .github/workflows/ci.yml
+```
+
+It runs three jobs: the self-contained syntax check plus the Lua 5.1 grammar parse
+and module-reference check, the behavioural suite on all three platforms against a
+downloaded Neovim, and a "configuration loads without plugins" regression test —
+which is the guard for this project's central rule that a missing optional piece
+must never break startup.
+
 ### Why both a custom checker and luaparse
 
 They catch different things, and each has caught a real defect:

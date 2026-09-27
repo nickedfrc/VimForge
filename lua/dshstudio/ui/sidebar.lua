@@ -479,18 +479,51 @@ function M.pick_model()
       util().notify('no ' .. title .. ' options reported by the agent yet', vim.log.levels.WARN)
       return
     end
+    -- Show the provider group in the label: with several providers configured,
+    -- two options can share a model name and only the group distinguishes them.
+    -- Also flag providers with no usable key, so a 401 is predictable rather
+    -- than surprising.
+    local key_state = {}
+    do
+      local ok, auth = pcall(require, 'dshstudio.core.auth')
+      if ok and auth.providers then
+        for _, p in ipairs(auth.providers()) do
+          key_state[p.provider] = p
+        end
+      end
+    end
+
     vim.ui.select(choices, {
-      prompt = 'Select ' .. title,
+      prompt = 'Select ' .. title .. '  (:DshAuth to configure API keys)',
       format_item = function(item)
         local mark = item.current and '● ' or '  '
+        local group = item.group or ''
+        local info = key_state[group]
+        -- A missing key is only a warning: a key that the harness holds
+        -- elsewhere (or a provider it handles without one) is still usable.
+        local warn = (info and not info.key_set) and '  ⚠ no key' or ''
         local desc = item.description and (' — ' .. item.description:sub(1, 60)) or ''
-        return ('%s%s/%s%s'):format(mark, item.group or '', item.name or item.value, desc)
+        return ('%s%s / %s%s%s'):format(mark, group, item.name or item.value, warn, desc)
       end,
     }, function(choice)
       if not choice then return end
       s.set_config_option(choice.config_id, choice.value, function(ok, err)
         if ok then
-          util().notify(('%s set to %s'):format(choice.config_id, choice.name), vim.log.levels.INFO)
+          util().notify(('%s set to %s/%s'):format(choice.config_id, choice.group or '?', choice.name),
+            vim.log.levels.INFO)
+          -- Switching to a provider with no key would fail on the next turn;
+          -- offer to fix that immediately instead of letting it 401 later.
+          local info = key_state[choice.group or '']
+          if info and not info.key_set and info.key_env then
+            vim.ui.select({ 'Set it now', 'Later' }, {
+              prompt = ('%s has no API key configured (%s)'):format(info.label or info.provider, info.key_env),
+            }, function(pick)
+              if pick == 'Set it now' then
+                local ok2, auth = pcall(require, 'dshstudio.core.auth')
+                if ok2 and auth.manage then auth.manage(info.provider) end
+              end
+            end)
+          end
         else
           util().notify('switch failed: ' .. tostring(err), vim.log.levels.ERROR)
         end

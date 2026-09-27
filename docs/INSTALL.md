@@ -151,6 +151,26 @@ directory. Prefer the `NVIM_APPNAME` route if you care about isolation.
 | DeepSeek Harness | AI features | `npm i -g @deepseek-ai/dsh` |
 | git | plugin downloads | installer/package manager |
 
+### AI credentials
+
+The harness needs an API key per model provider. The editor writes them into the
+harness' own store, so there is nothing extra to configure:
+
+```vim
+:DshAuth          " choose a provider and paste its key
+:DshProviders     " see which providers are keyed and which model each offers
+:DshModel         " pick the model
+```
+
+Precedence, highest first: a variable exported in your shell, then the harness
+store (`$DSH_HOME/.credentials.yaml`), then a project `.env`, then
+`$DSH_HOME/.env`. So exporting a key in a CI job overrides whatever a developer
+saved locally, and no key has to be stored on disk at all.
+
+To add a provider beyond the shipped DeepSeek and Xiaomi routes, declare it in
+`$DSH_HOME/settings.yaml` as a pi-ai route with an `apiKeyEnv` reference, then run
+`:DshAuth` to fill that variable. See the README section "Models and API keys".
+
 ### Language servers
 
 | Language | Windows | macOS | Linux |

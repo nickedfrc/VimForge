@@ -1,0 +1,134 @@
+name: checks
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  static-syntax:
+    name: Lua syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      # No Lua toolchain needed: the checker lexes Lua itself and verifies block
+      # structure, which is what actually breaks a Neovim config.
+      - name: Check every Lua file parses (self-contained checker)
+        run: node tests/lua_syntax_check.js ./nvim-deepseek-studio
+
+      # Second opinion from a real Lua 5.1 grammar parser. Catches anything a
+      # block-structure check cannot (bad expressions, malformed tables).
+      - name: Install luaparse
+        run: npm install --no-save luaparse
+
+      - name: Check every Lua file parses (Lua 5.1 grammar)
+        run: node tests/lua_parse_check.js ./nvim-deepseek-studio
+
+      - name: Check module requires resolve
+        run: node tests/check_requires.js ./nvim-deepseek-studio
+
+  offline-tests:
+    name: Offline self-tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Neovim (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          curl -fL -o nvim.tar.gz https://github.com/neovim/neovim/releases/download/stable/nvim-linux-x86_64.tar.gz \
+            || curl -fL -o nvim.tar.gz https://github.com/neovim/neovim/releases/download/stable/nvim-linux64.tar.gz
+          mkdir -p "$HOME/nvim-dist"
+          tar -xzf nvim.tar.gz -C "$HOME/nvim-dist" --strip-components=1
+          echo "$HOME/nvim-dist/bin" >> "$GITHUB_PATH"
+
+      - name: Install Neovim (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install neovim || brew upgrade neovim
+
+      - name: Install Neovim (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $url = 'https://github.com/neovim/neovim/releases/download/stable/nvim-win64.zip'
+          Invoke-WebRequest -Uri $url -OutFile nvim.zip -UseBasicParsing
+          Expand-Archive nvim.zip -DestinationPath nvim-dist -Force
+          $exe = Get-ChildItem -Path nvim-dist -Recurse -Filter nvim.exe | Select-Object -First 1
+          Add-Content -Path $env:GITHUB_PATH -Value $exe.DirectoryName
+
+      - name: Show Neovim version
+        run: nvim --version | head -n 3
+        shell: bash
+
+      # The tests drive the ACP client against a scripted fake transport, so no
+      # agent process, credentials or network access are required.
+      - name: Run offline protocol self-tests
+        shell: bash
+        run: |
+          set -o pipefail
+          nvim --headless \
+            --cmd "set rtp+=$PWD/nvim-deepseek-studio" \
+            -c "lua require('dshstudio.tests.probe').main()" 2>&1 | tee selftest.log
+
+      - name: Upload self-test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: selftest-${{ matrix.os }}
+          path: selftest.log
+          if-no-files-found: ignore
+
+  config-loads:
+    name: Configuration loads (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Neovim (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          curl -fL -o nvim.tar.gz https://github.com/neovim/neovim/releases/download/stable/nvim-linux-x86_64.tar.gz \
+            || curl -fL -o nvim.tar.gz https://github.com/neovim/neovim/releases/download/stable/nvim-linux64.tar.gz
+          mkdir -p "$HOME/nvim-dist"
+          tar -xzf nvim.tar.gz -C "$HOME/nvim-dist" --strip-components=1
+          echo "$HOME/nvim-dist/bin" >> "$GITHUB_PATH"
+
+      - name: Install Neovim (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri 'https://github.com/neovim/neovim/releases/download/stable/nvim-win64.zip' -OutFile nvim.zip -UseBasicParsing
+          Expand-Archive nvim.zip -DestinationPath nvim-dist -Force
+          $exe = Get-ChildItem -Path nvim-dist -Recurse -Filter nvim.exe | Select-Object -First 1
+          Add-Content -Path $env:GITHUB_PATH -Value $exe.DirectoryName
+
+      # Loads init.lua and every first-party module with plugins absent. This is
+      # the regression test for "a missing dependency must not break startup".
+      - name: Load core modules without plugins
+        shell: bash
+        run: |
+          set -o pipefail
+          nvim --headless --clean \
+            --cmd "set rtp+=$PWD/nvim-deepseek-studio" \
+            -c "lua local mods = {'dshstudio.config','dshstudio.util','dshstudio.core.acp','dshstudio.core.session','dshstudio.core.context','dshstudio.core.headless','dshstudio.project.scan','dshstudio.project.symbols','dshstudio.ui.outline'}
+                 local bad = {}
+                 for _, m in ipairs(mods) do
+                   local ok, err = pcall(require, m)
+                   if not ok then table.insert(bad, m .. ': ' .. tostring(err)) end
+                 end
+                 if #bad > 0 then print('LOAD_FAIL'); for _, b in ipairs(bad) do print('  ' .. b) end; vim.cmd('cquit!') end
+                 print('LOAD_OK')" \
+            -c "qa!"

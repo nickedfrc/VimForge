@@ -22,7 +22,12 @@ local function check(name, fn)
   if ok then
     record(name, true)
   else
-    record(name, false, tostring(err))
+    -- Capture the frame inside the failing function, not just the message: the
+    -- assertion helpers raise at level 2, which otherwise hides the real site.
+    local where = ''
+    local info = debug.getinfo(fn, 'S')
+    if info and info.short_src then where = info.short_src end
+    record(name, false, ('%s  [at %s]'):format(tostring(err), where))
   end
 end
 
@@ -443,6 +448,128 @@ local function test_symbols_bom_and_merge()
   eq(inner.parent, 'outer_mod', 'nested subroutine attributed to its module')
 end
 
+---Provider/key management must use the harness' own credential store: write a key
+---into `refs:`, read it back, replace it in place without duplicating, remove it,
+---and never claim a key is present when it is not.
+local function test_auth_keys()
+  local auth = require('dshstudio.core.auth')
+
+  -- Redirect the harness home at a scratch directory for the whole test.
+  local saved = vim.env.DSH_HOME
+  local dir = vim.fn.tempname() .. '-dsh'
+  vim.fn.mkdir(dir, 'p')
+  vim.env.DSH_HOME = dir
+
+  local ok, err = pcall(function()
+    eq(auth.harness_home(), dir, 'harness home follows DSH_HOME')
+    ok(auth.credentials_path():find(dir, 1, true) == 1, 'credential path under the harness home')
+    ok(auth.settings_path():find(dir, 1, true) == 1, 'settings path under the harness home')
+
+    -- Nothing configured yet.
+    eq(next(auth.read_refs()), nil, 'no refs initially')
+    local configured, source = auth.describe_key('DEEPSEEK_API_KEY')
+    eq(configured, false, 'absent key reports as missing')
+    ok(source == nil, 'absent key has no source')
+
+    -- Writing into a fresh store creates the documented shape.
+    local write_ok, write_err = auth.set_key('DEEPSEEK_API_KEY', 'sk-test-1234567890')
+    ok(write_ok, 'key write succeeded: ' .. tostring(write_err))
+    local raw = table.concat(vim.fn.readfile(auth.credentials_path()), '\n')
+    ok(raw:match('^version:%s*1') ~= nil, 'store declares version 1')
+    ok(raw:match('\nrefs:') ~= nil, 'store has a refs section')
+    eq(auth.read_refs().DEEPSEEK_API_KEY, 'sk-test-1234567890', 'key reads back')
+    ok(auth.describe_key('DEEPSEEK_API_KEY'), 'describe reports the stored key')
+    -- Replacing must not duplicate the entry.
+    ok(auth.set_key('DEEPSEEK_API_KEY', 'sk-second-value-here'), 'key replace')
+    local after = table.concat(vim.fn.readfile(auth.credentials_path()), '\n')
+    local _, count = after:gsub('DEEPSEEK_API_KEY', '')
+    eq(count, 1, 'the name appears exactly once after replacement')
+    eq(auth.read_refs().DEEPSEEK_API_KEY, 'sk-second-value-here', 'replacement value wins')
+
+    -- A second key is added without disturbing the first.
+    ok(auth.set_key('XIAOMI_API_KEY', 'xm-abcdef123456'), 'second key write')
+    local refs = auth.read_refs()
+    eq(refs.DEEPSEEK_API_KEY, 'sk-second-value-here', 'first key survives')
+    eq(refs.XIAOMI_API_KEY, 'xm-abcdef123456', 'second key stored')
+
+    -- Comment lines must survive an edit: the harness treats a comment above an
+    -- entry as that entry's note.
+    local commented = table.concat({
+      'version: 1',
+      'refs:',
+      '  # turn on the fallback provider',
+      '  OPENAI_API_KEY: sk-openai-original',
+      '',
+    }, '\n')
+    vim.fn.writefile(vim.split(commented, '\n'), auth.credentials_path())
+    ok(auth.set_key('OPENAI_API_KEY', 'sk-openai-updated'), 'edit a commented entry')
+    local kept = table.concat(vim.fn.readfile(auth.credentials_path()), '\n')
+    ok(kept:match('# turn on the fallback provider') ~= nil, 'the comment note survives')
+    ok(kept:match('sk%-openai%-updated') ~= nil, 'the value was replaced')
+
+    -- Removal.
+    ok(auth.set_key('XIAOMI_API_KEY', nil), 'key removal')
+    eq(auth.read_refs().XIAOMI_API_KEY, nil, 'removed key is gone')
+
+    -- Invalid input is refused rather than written.
+    local bad_ok, bad_err = auth.set_key('not a name', 'x')
+    ok(not bad_ok, 'invalid name refused')
+    ok(type(bad_err) == 'string', 'refusal explains itself')
+    local empty_ok = auth.set_key('EMPTY_KEY', '')
+    ok(not empty_ok, 'empty value refused')
+
+    -- An environment variable outranks the store, per the harness precedence.
+    vim.env.DSHSTUDIO_TEST_KEY = 'from-environment'
+    ok(auth.set_key('DSHSTUDIO_TEST_KEY', 'from-store'), 'store write for the precedence check')
+    local got, got_source = auth.describe_key('DSHSTUDIO_TEST_KEY')
+    ok(got, 'key reported configured')
+    eq(got_source, 'launch environment', 'environment wins over the store')
+    vim.env.DSHSTUDIO_TEST_KEY = nil
+
+    -- Providers declared in settings are reported even before they are advertised.
+    local settings_text = table.concat({
+      'llm-pi-ai:',
+      '  providers:',
+      '    openai:',
+      '      apiKeyEnv: OPENAI_API_KEY',
+      '      baseURL: https://proxy.example.com',
+      'agent-default-model:',
+      '  provider: deepseek-official',
+      '  model: deepseek-flash',
+      '',
+    }, '\n')
+    vim.fn.writefile(vim.split(settings_text, '\n'), auth.settings_path())
+    local declared = auth.settings_providers()
+    local found_openai = false
+    for _, entry in ipairs(declared) do
+      if entry.provider == 'openai' then
+        found_openai = true
+        eq(entry.api_key_env, 'OPENAI_API_KEY', 'declared apiKeyEnv parsed')
+        eq(entry.base_url, 'https://proxy.example.com', 'declared baseURL parsed')
+      end
+    end
+    ok(found_openai, 'settings-declared provider discovered')
+    local dp, dm = auth.default_model()
+    eq(dp, 'deepseek-official', 'default provider from settings')
+    eq(dm, 'deepseek-flash', 'default model from settings')
+
+    -- Provider reporting must not throw with no session connected.
+    ok(type(auth.providers()) == 'table', 'providers returns a table')
+    ok(type(auth.status_lines()) == 'table', 'status lines render')
+    ok(type(auth.status()) == 'string', 'short status renders')
+  end)
+
+  -- Restore and clean up even on failure.
+  if saved == nil then
+    vim.env.DSH_HOME = nil
+  else
+    vim.env.DSH_HOME = saved
+  end
+  vim.env.DSHSTUDIO_TEST_KEY = nil
+  pcall(vim.fn.delete, dir, 'rf')
+  if not ok then error(err, 0) end
+end
+
 local function test_headless_clip()
   local headless = require('dshstudio.core.headless')
   local short = 'hello'
@@ -502,6 +629,7 @@ local ALL = {
   ['headless: system output normalisation'] = test_headless_output_normalisation,
   ['symbols: BOM tolerance and module nesting'] = test_symbols_bom_and_merge,
   ['session: agent discovery'] = test_agent_discovery,
+  ['auth: keys, agent env and credential file'] = test_auth_keys,
 }
 
 ---Names of every registered test, sorted.

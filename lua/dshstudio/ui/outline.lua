@@ -69,12 +69,19 @@ end
 ---@param bufnr integer
 ---@return table[]|nil
 local function from_lsp(bufnr)
-  local ok, clients = pcall(vim.lsp.get_clients, { bufnr = bufnr })
+  -- `vim.lsp` is lazily loaded and can fail to load while the runtime path is
+  -- still being assembled (observed from a release-bundle config directory). The
+  -- offline extractor below is the fallback, so a failure here is recoverable.
+  local ok_mod, lsp = pcall(require, 'vim.lsp')
+  if not ok_mod or type(lsp) ~= 'table' then return nil end
+  if type(lsp.get_clients) ~= 'function' or type(lsp.buf_request_all) ~= 'function' then return nil end
+
+  local ok, clients = pcall(lsp.get_clients, { bufnr = bufnr })
   if not ok or type(clients) ~= 'table' or #clients == 0 then return nil end
 
   local done = false
   local responses = nil
-  local requested = pcall(vim.lsp.buf_request_all, bufnr, 'textDocument/documentSymbol', {
+  local requested = pcall(lsp.buf_request_all, bufnr, 'textDocument/documentSymbol', {
     textDocument = { uri = vim.uri_from_bufnr(bufnr) },
   }, function(results)
     responses = results

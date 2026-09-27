@@ -58,9 +58,9 @@ function header(name, size, mode, type) {
 const chunks = [];
 
 const prefix = stripPrefix ? '' : (entryName || base);
-// Launcher scripts must keep their executable bit through extraction; every
-// other file is a plain 0644 data file.
-const LAUNCHERS = new Set(['vimforge', 'install.sh', 'install.cmd', 'install.ps1', 'vimforge.ps1']);
+// Files that must stay executable through extraction: the launchers, and the
+// bundled Neovide AppImage (which is executed directly).
+const LAUNCHERS = new Set(['vimforge', 'vimforge-gui', 'install.sh', 'neovide']);
 
 async function walk(abs, rel) {
   const info = await stat(abs);

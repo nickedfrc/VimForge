@@ -116,6 +116,22 @@ for (const file of files) {
   console.log(`  bundled Neovim binary: ${hasBinary ? 'yes' : 'NO'}  (${nvimEntries.length} nvim paths)`);
   if (!hasBinary) failures++;
 
+  // Neovide is bundled on Windows and Linux (macOS upstream ships only a .dmg,
+  // so that bundle carries a fetcher script instead). Report which it is.
+  const neovideEntry = entries.find((e) => /neovide(\/neovide|\.exe)?$/.test(e.name) && (e.size || e.uncompSize) > 1000000);
+  if (neovideEntry) {
+    console.log(`  bundled Neovide: yes (${(neovideEntry.size || neovideEntry.uncompSize) / 1048576 | 0} MB) at ${neovideEntry.name.slice(root.length + 1)}`);
+    if (file.endsWith('.tar.gz')) {
+      const executable = (neovideEntry.mode & 0o111) !== 0;
+      console.log(`    mode ${neovideEntry.mode.toString(8)} ${executable ? 'executable' : 'NOT EXECUTABLE'}`);
+      if (!executable) failures++;
+    }
+  } else {
+    const fetcher = [...names].some((n) => n.includes('get-neovide'));
+    console.log(`  bundled Neovide: no  (fetcher script present: ${fetcher ? 'yes' : 'NO'})`);
+    if (!fetcher) failures++;
+  }
+
   // Launchers must be executable in the tar archives; zip carries the bit in
   // external attributes, which Windows ignores anyway.
   if (file.endsWith('.tar.gz')) {

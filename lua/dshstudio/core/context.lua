@@ -66,6 +66,20 @@ function M.selection_range()
   return srow, erow
 end
 
+---Access Neovim's LSP client table safely.
+---
+---`vim.lsp` is a lazily loaded module. Touching it before the runtime path is
+---fully assembled raises "loop or previous error loading module 'vim.lsp'",
+---which was observed when the configuration is loaded as an app config directory
+---straight from a release bundle. Symbol context is a nice-to-have, so a failure
+---here must degrade to "no symbols" rather than break the whole context build.
+---@return table|nil
+local function lsp_module()
+  local ok, mod = pcall(require, 'vim.lsp')
+  if ok and type(mod) == 'table' then return mod end
+  return nil
+end
+
 ---Request document symbols without ever blocking indefinitely.
 ---
 ---`vim.lsp.buf_request_sync` can park the main loop on Neovim 0.12 (observed:
@@ -76,12 +90,17 @@ end
 ---@param timeout_ms integer
 ---@return table|nil responses
 local function request_symbols(bufnr, timeout_ms)
-  local ok, clients = pcall(vim.lsp.get_clients, { bufnr = bufnr })
+  local lsp = lsp_module()
+  if not lsp or type(lsp.get_clients) ~= 'function' or type(lsp.buf_request_all) ~= 'function' then
+    return nil
+  end
+
+  local ok, clients = pcall(lsp.get_clients, { bufnr = bufnr })
   if not ok or type(clients) ~= 'table' or #clients == 0 then return nil end
 
   local done = false
   local responses = nil
-  local requested = pcall(vim.lsp.buf_request_all, bufnr, 'textDocument/documentSymbol', {
+  local requested = pcall(lsp.buf_request_all, bufnr, 'textDocument/documentSymbol', {
     textDocument = { uri = vim.uri_from_bufnr(bufnr) },
   }, function(results)
     responses = results

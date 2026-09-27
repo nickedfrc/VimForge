@@ -610,8 +610,12 @@ function M.setup()
 
   -- Servers already attached before this autocmd existed (config reload).
   pcall(function()
+    -- `vim.lsp` is lazily loaded and can fail while the runtime path is still
+    -- being assembled; without this guard the whole config errors out.
+    local ok_lsp, lsp = pcall(require, 'vim.lsp')
+    if not ok_lsp or type(lsp) ~= 'table' or type(lsp.get_clients) ~= 'function' then return end
     for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-      if vim.api.nvim_buf_is_loaded(buf) and #vim.lsp.get_clients({ bufnr = buf }) > 0 then
+      if vim.api.nvim_buf_is_loaded(buf) and #lsp.get_clients({ bufnr = buf }) > 0 then
         attach_lsp_maps(buf)
       end
     end

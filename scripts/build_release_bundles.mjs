@@ -33,6 +33,8 @@ const PLATFORMS = [
       url: `https://github.com/neovim/neovim/releases/download/${NVIM_VERSION}/nvim-win64.zip`,
       format: 'zip',
     },
+    // Neovide ships as a zip on Windows, so it can be unpacked unattended.
+    neovide: { asset: 'neovide.exe.zip', dest: 'neovide', format: 'zip' },
   },
   {
     id: 'macos-universal',
@@ -50,6 +52,9 @@ const PLATFORMS = [
         format: 'tar.gz',
       },
     ],
+    // Upstream publishes only a .dmg for macOS, which cannot be mounted and
+    // copied unattended, so this platform gets the fetcher script instead.
+    neovide: null,
   },
   {
     id: 'linux-x86_64',
@@ -60,6 +65,8 @@ const PLATFORMS = [
       // Older releases used this name; fall back if the primary 404s.
       fallback: `https://github.com/neovim/neovim/releases/download/${NVIM_VERSION}/nvim-linux64.tar.gz`,
     },
+    // The AppImage is a single executable file.
+    neovide: { asset: 'neovide.AppImage', dest: 'neovide/neovide', format: 'raw', mode: 0o755 },
   },
 ];
 
@@ -134,6 +141,50 @@ async function extractTarGz(buffer, destDir) {
   }
 }
 
+// Extract a zip without a child process (this environment blocks spawned stdio).
+async function extractZip(buffer, destDir, stripPrefix) {
+  const { inflateRawSync } = await import('node:zlib');
+  let eocd = buffer.length - 22;
+  while (eocd > 0 && buffer.readUInt32LE(eocd) !== 0x06054b50) eocd--;
+  if (eocd <= 0) throw new Error('not a zip archive (no central directory)');
+  const count = buffer.readUInt16LE(eocd + 10);
+  let cd = buffer.readUInt32LE(eocd + 16);
+  for (let i = 0; i < count; i++) {
+    const method = buffer.readUInt16LE(cd + 10);
+    const compSize = buffer.readUInt32LE(cd + 20);
+    const nameLen = buffer.readUInt16LE(cd + 28);
+    const extraLen = buffer.readUInt16LE(cd + 30);
+    const commentLen = buffer.readUInt16LE(cd + 32);
+    const localOff = buffer.readUInt32LE(cd + 42);
+    let entryName = buffer.subarray(cd + 46, cd + 46 + nameLen).toString('utf8');
+    if (stripPrefix) entryName = entryName.replace(stripPrefix, '');
+    const localNameLen = buffer.readUInt16LE(localOff + 26);
+    const localExtraLen = buffer.readUInt16LE(localOff + 28);
+    const dataStart = localOff + 30 + localNameLen + localExtraLen;
+    const compressed = buffer.subarray(dataStart, dataStart + compSize);
+    if (entryName && !entryName.endsWith('/')) {
+      const target = path.join(destDir, entryName);
+      if (path.resolve(target).startsWith(path.resolve(destDir))) {
+        await mkdir(path.dirname(target), { recursive: true });
+        await writeFile(target, method === 0 ? compressed : inflateRawSync(compressed));
+      }
+    }
+    cd += 46 + nameLen + extraLen + commentLen;
+  }
+}
+
+// Find a release asset by exact name on a GitHub repository.
+async function findAsset(repo, assetName) {
+  const res = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
+    headers: { 'User-Agent': 'vimforge-builder', Accept: 'application/vnd.github+json' },
+  });
+  if (!res.ok) throw new Error(`GitHub API ${res.status} for ${repo}`);
+  const release = await res.json();
+  const asset = (release.assets || []).find((a) => a.name === assetName);
+  if (!asset) throw new Error(`asset ${assetName} not found in ${repo} ${release.tag_name}`);
+  return asset;
+}
+
 // ---------------------------------------------------------------------------
 // Bundle assembly
 // ---------------------------------------------------------------------------
@@ -155,50 +206,85 @@ async function copyTree(from, to, skip = new Set()) {
 const README = (platform) => `VimForge ${VERSION} - portable bundle for ${platform.label}
 =====================================================================
 
-This bundle is self-contained: it includes the configuration AND the official
-Neovim binary, so you do not need to install anything else to start editing.
-Only the optional AI features need Node.js and the DeepSeek Harness CLI.
+This bundle is self-contained. It includes the configuration AND the official
+Neovim build for this platform, and it keeps everything inside this folder, so you
+can start editing immediately and delete the folder to uninstall.
 
 QUICK START
 -----------
 
   Windows        double-click  install.cmd
-                 or run        powershell -ExecutionPolicy Bypass -File install.ps1
+                 then use the "VimForge" desktop shortcut, or VimForge.cmd
+                 terminal:  powershell -File vimforge.ps1
 
   macOS / Linux  ./install.sh
+                 then:  vimforge            terminal editor
+                        vimforge-gui        desktop window (needs Neovide)
 
-The installer points this bundle at its own config (NVIM_APPNAME=dshstudio), so
-your existing Neovim configuration is never read or modified.
+Nothing is written outside this folder. An existing Neovim configuration is never
+read or modified.
 
-The AI panel and project analysis also need:
+FOLDER LAYOUT
+-------------
 
-  npm install -g @deepseek-ai/dsh      # DeepSeek Harness CLI (needs Node.js 18+)
+  nvim-deepseek-studio/   the shipped configuration (read-only source of truth)
+  config/dshstudio/       the Neovim config directory actually in use, seeded
+                          from the folder above on first run
+  data/                   plugins, undo files and state, all inside the bundle
+  nvim/                   the bundled Neovim runtime for this platform
+  vimforge / vimforge.ps1        terminal editor launcher
+  vimforge-gui / VimForge.cmd    desktop window launcher (Neovide, optional)
+  install.sh / install.cmd       first-run setup
+  docs/                   ACP protocol contract, install, troubleshooting, dev
+  scripts/get-neovide.sh/.ps1    optional: fetch the Neovide GUI front-end
+  VERSION, SHA256SUMS     bundle metadata
 
-Then open the editor and press:
+Why the config lives in two places: Neovim only reads the directory named after
+$NVIM_APPNAME (here "dshstudio"), while the repository ships it as
+"nvim-deepseek-studio". Seeding config/dshstudio on first run bridges that without
+touching your home directory.
+
+THE DESKTOP WINDOW (Neovide)
+----------------------------
+
+The terminal editor works out of the box. For a standalone window, run:
+
+  Windows        powershell -ExecutionPolicy Bypass -File scripts\\get-neovide.ps1
+  Linux          ./scripts/get-neovide.sh
+  macOS          download Neovide from https://neovide.dev and put "neovide" in
+                 this folder or on your PATH
+
+Neovide is deliberately not bundled: it is a large per-platform binary, and the
+terminal editor is fully functional without it.
+
+THE AI FEATURES (optional)
+--------------------------
+
+These need Node.js 18+ and the DeepSeek Harness CLI:
+
+  npm install -g @deepseek-ai/dsh
+
+Then, in the editor:
 
   <leader>dd   open the DeepSeek panel        (Space is <leader>)
-  <leader>dm   choose the model
   :DshAuth     set an API key for a provider
+  <leader>dm   choose the model
+  :DshProviders  see which providers are keyed
   <leader>dp   project analysis
-  :DshHealth   show what was found / what is missing
+  :DshHealth   what was found / what is missing
 
-WHAT IS IN THIS BUNDLE
-----------------------
-
-  nvim-deepseek-studio/   the configuration (Neovim loads this as the app config)
-  nvim/                   the bundled Neovim runtime for this platform
-  scripts/                install scripts (also usable standalone)
-  docs/                   ACP protocol contract, install, troubleshooting, development
-  install.sh/.ps1/.cmd    the entry points (handled by the launchers below)
-  VERSION                 bundle version
-  SHA256SUMS              checksums of the files in this bundle
+Keys are stored where the harness keeps them ($DSH_HOME/.credentials.yaml), so
+they are available to every harness tool, not just this editor. Precedence is:
+an exported environment variable, then that store, then a project .env, then the
+harness-home .env.
 
 REQUIREMENTS
 ------------
 
   Required   none beyond this bundle
   Optional   Node.js 18+ and @deepseek-ai/dsh   for the AI panel and analysis
-  Optional   clangd / pyright / fortls          for full code intelligence
+  Optional   Neovide                            for the standalone window
+  Optional   clangd / pyright / fortls           for full code intelligence
              (installable from inside the editor with :Mason)
 
 Without a language server you still get tree-sitter highlighting and the offline
@@ -207,9 +293,9 @@ symbol outline, which needs no server at all.
 LICENCES
 --------
 
-The configuration is MIT. The bundled Neovim is the official upstream build
-under its own licence (Apache-2.0 with the Vim licence for inherited parts) and
-is redistributed unmodified. See docs/../CREDITS.md for the full inventory.
+The configuration is MIT. The bundled Neovim is the official upstream build under
+its own licence (Apache-2.0 with the Vim licence for inherited parts) and is
+redistributed unmodified. See CREDITS.md for the full inventory.
 
 This is an independent project, not affiliated with or endorsed by the Neovim,
 Vim, Neovide or DeepSeek projects.
@@ -248,127 +334,170 @@ async function buildBundle(platform, stageRoot) {
     const dest = asset.name ? path.join(dir, 'nvim', asset.name) : path.join(dir, 'nvim');
     await mkdir(dest, { recursive: true });
     if (asset.format === 'zip') {
-      // Unzip via PowerShell's Expand-Archive equivalent is unavailable in this
-      // sandbox, so use a pure-JS inflate over the zip's stored members.
-      const { inflateRawSync } = await import('node:zlib');
-      const buf = await readFile(file);
-      // Walk the central directory to find file entries.
-      let eocd = buf.length - 22;
-      while (eocd > 0 && buf.readUInt32LE(eocd) !== 0x06054b50) eocd--;
-      const count = buf.readUInt16LE(eocd + 10);
-      let cd = buf.readUInt32LE(eocd + 16);
-      for (let i = 0; i < count; i++) {
-        const method = buf.readUInt16LE(cd + 10);
-        const compSize = buf.readUInt32LE(cd + 20);
-        const nameLen = buf.readUInt16LE(cd + 28);
-        const extraLen = buf.readUInt16LE(cd + 30);
-        const commentLen = buf.readUInt16LE(cd + 32);
-        const localOff = buf.readUInt32LE(cd + 42);
-        const entryName = buf.subarray(cd + 46, cd + 46 + nameLen).toString('utf8');
-        const localNameLen = buf.readUInt16LE(localOff + 26);
-        const localExtraLen = buf.readUInt16LE(localOff + 28);
-        const dataStart = localOff + 30 + localNameLen + localExtraLen;
-        const compressed = buf.subarray(dataStart, dataStart + compSize);
-        // The archive root is nvim-win64/; strip it.
-        const rel = entryName.replace(/^nvim-win64\//, '');
-        if (rel && !entryName.endsWith('/')) {
-          const target = path.join(dest, rel);
-          if (path.resolve(target).startsWith(path.resolve(dest))) {
-            await mkdir(path.dirname(target), { recursive: true });
-            if (method === 0) await writeFile(target, compressed);
-            else await writeFile(target, inflateRawSync(compressed));
-          }
-        }
-        cd += 46 + nameLen + extraLen + commentLen;
-      }
+      // The archive root is nvim-win64/; strip it. Pure-JS extraction because
+      // this environment cannot spawn a child process to run unzip.
+      await extractZip(await readFile(file), dest, /^nvim-win64\//);
     } else {
       await extractTarGz(await readFile(file), dest);
     }
     await rm(file, { force: true });
   }
+
+  // 3b. Neovide, where upstream publishes something unpackable without a desktop
+  //     session. macOS ships only a .dmg, so that platform gets the fetcher
+  //     script instead of a bundled binary.
+  if (platform.neovide) {
+    try {
+      console.log(`    fetching Neovide (${platform.neovide.asset})`);
+      const asset = await findAsset('neovide/neovide', platform.neovide.asset);
+      const file = path.join(tmp, platform.neovide.asset);
+      await download(asset.browser_download_url, file);
+      const destPath = path.join(dir, platform.neovide.dest);
+      await mkdir(path.dirname(destPath), { recursive: true });
+      if (platform.neovide.format === 'zip') {
+        await extractZip(await readFile(file), destPath);
+      } else {
+        await writeFile(destPath, await readFile(file), { mode: platform.neovide.mode || 0o755 });
+      }
+      await rm(file, { force: true });
+      console.log(`    Neovide -> ${platform.neovide.dest}`);
+    } catch (err) {
+      console.log(`    !! Neovide unavailable (${String(err.message).slice(0, 140)})`);
+      console.log('       the terminal editor is unaffected');
+    }
+  }
   await rm(tmp, { recursive: true, force: true });
 
-  // 4. Launchers that use the bundled Neovim.
+  // 4. Launchers.
+  //
+  // Config resolution is the subtle part. Neovim only looks at
+  // `$XDG_CONFIG_HOME/$NVIM_APPNAME`, so a bundle whose configuration directory
+  // is named `nvim-deepseek-studio` is invisible to it - the editor starts as a
+  // bare Neovim, which is exactly the bug this layout exists to prevent. The
+  // fix is to keep everything inside the bundle: `config/dshstudio` is the
+  // Neovim config directory, populated from the shipped configuration on first
+  // run, and `XDG_CONFIG_HOME` points at `config/`. Nothing is written to the
+  // user's home directory.
   const shLauncher = `#!/usr/bin/env bash
-# VimForge portable launcher. Uses the Neovim inside this bundle.
+# VimForge portable launcher. Self-contained: uses the Neovim and the
+# configuration inside this folder, and writes nothing outside it.
 set -euo pipefail
 HERE="$(cd "$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
 
-# Pick the Neovim build for this machine.
+# Resolve this machine's Neovim build.
 NVIM_BIN=""
 if [ -x "$HERE/nvim/bin/nvim" ]; then
   NVIM_BIN="$HERE/nvim/bin/nvim"
 else
-  for arch in "$(uname -m)" x86_64 arm64; do
-    case "$arch" in
-      aarch64|arm64) candidate="$HERE/nvim/arm64/bin/nvim" ;;
-      *)             candidate="$HERE/nvim/x86_64/bin/nvim" ;;
-    esac
-    if [ -x "$candidate" ]; then NVIM_BIN="$candidate"; break; fi
-  done
-fi
-if [ -z "$NVIM_BIN" ]; then
-  if command -v nvim >/dev/null 2>&1; then
+  case "$(uname -m)" in
+    aarch64|arm64) CAND="$HERE/nvim/arm64/bin/nvim" ;;
+    *)             CAND="$HERE/nvim/x86_64/bin/nvim" ;;
+  esac
+  if [ -x "$CAND" ]; then
+    NVIM_BIN="$CAND"
+  elif command -v nvim >/dev/null 2>&1; then
+    echo "note: this bundle has no Neovim for $(uname -m); using $(command -v nvim)" >&2
     NVIM_BIN="$(command -v nvim)"
   else
-    echo "No Neovim found in this bundle and none on PATH." >&2
-    echo "Re-download the bundle, or install Neovim 0.11+ and retry." >&2
+    echo "No Neovim available: the bundle has none for $(uname -m) and none is on PATH." >&2
     exit 1
   fi
 fi
 
-# Isolate from any existing Neovim configuration.
-export NVIM_APPNAME=dshstudio
+# Make the configuration the app config directory, without touching ~/.config.
 export DSHSTUDIO_ROOT="$HERE"
-export XDG_CONFIG_HOME="\${XDG_CONFIG_HOME:-$HOME/.config}"
+export XDG_CONFIG_HOME="$HERE/config"
 mkdir -p "$XDG_CONFIG_HOME/dshstudio"
-
-# Point the app config at this bundle the first time it runs.
-if [ ! -e "$XDG_CONFIG_HOME/dshstudio/init.lua" ]; then
-  ln -sfn "$HERE/nvim-deepseek-studio" "$XDG_CONFIG_HOME/dshstudio-link" 2>/dev/null || true
-  cp -R "$HERE/nvim-deepseek-studio/." "$XDG_CONFIG_HOME/dshstudio/" 2>/dev/null || true
+if [ ! -f "$XDG_CONFIG_HOME/dshstudio/init.lua" ]; then
+  cp -R "$HERE/nvim-deepseek-studio/." "$XDG_CONFIG_HOME/dshstudio/"
 fi
+# Keep plugin and state data inside the bundle too, so uninstalling is a delete.
+export XDG_DATA_HOME="\${XDG_DATA_HOME:-$HERE/data}"
+mkdir -p "$XDG_DATA_HOME"
+export NVIM_APPNAME=dshstudio
 
-exec "$NVIM_BIN" "$@"
+exec "$NVIM_BIN" "\$@"
 `;
   await writeFile(path.join(dir, 'vimforge'), shLauncher, { mode: 0o755 });
 
+  const shGui = `#!/usr/bin/env bash
+# VimForge desktop window (Neovide). Falls back to the terminal editor when
+# Neovide is not present in this bundle.
+set -euo pipefail
+HERE="$(cd "$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
+export DSHSTUDIO_ROOT="$HERE"
+export XDG_CONFIG_HOME="$HERE/config"
+mkdir -p "$XDG_CONFIG_HOME/dshstudio"
+if [ ! -f "$XDG_CONFIG_HOME/dshstudio/init.lua" ]; then
+  cp -R "$HERE/nvim-deepseek-studio/." "$XDG_CONFIG_HOME/dshstudio/"
+fi
+export XDG_DATA_HOME="\${XDG_DATA_HOME:-$HERE/data}"
+mkdir -p "$XDG_DATA_HOME"
+export NVIM_APPNAME=dshstudio
+
+for candidate in "$HERE/nvim/neovide" "$HERE/neovide" "/Applications/Neovide.app/Contents/MacOS/neovide"; do
+  if [ -x "$candidate" ]; then exec "$candidate" "\$@"; fi
+done
+if command -v neovide >/dev/null 2>&1; then exec neovide "\$@"; fi
+echo "Neovide is not installed; starting the terminal editor instead." >&2
+exec "$HERE/vimforge" "\$@"
+`;
+  await writeFile(path.join(dir, 'vimforge-gui'), shGui, { mode: 0o755 });
+
+  // install.sh wires up PATH entries; the launchers already work in place.
   const installSh = `#!/usr/bin/env bash
 # VimForge ${VERSION} portable install (${platform.label}).
-# Extracts nothing: the bundle is already complete. This wires up the launcher
-# and, optionally, the plugin set.
+#
+# This bundle is already complete - nothing is extracted or downloaded. This
+# script links the launchers into a directory on your PATH and, unless NO_PLUGINS
+# is set, syncs the plugin set.
 set -euo pipefail
 HERE="$(cd "$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
 BIN="\${DSHSTUDIO_BIN_DIR:-$HOME/.local/bin}"
 mkdir -p "$BIN"
 
-ln -sf "$HERE/vimforge" "$BIN/vimforge"
-echo "linked $BIN/vimforge"
+for launcher in vimforge vimforge-gui; do
+  if [ -x "$HERE/$launcher" ]; then
+    ln -sf "$HERE/$launcher" "$BIN/$launcher"
+    echo "linked $BIN/$launcher"
+  fi
+done
 
 case ":$PATH:" in
   *":$BIN:"*) ;;
-  *) echo "note: add $BIN to PATH:  export PATH=\\"$BIN:\\$PATH\\"" ;;
+  *) echo "note: add $BIN to PATH, e.g.  export PATH=\\"$BIN:\\$PATH\\"" ;;
 esac
 
-# Optional: sync plugins now (needs network + git).
 if [ "\${NO_PLUGINS:-0}" != "1" ] && command -v git >/dev/null 2>&1; then
-  echo "syncing plugins (first run downloads them)…"
+  echo "syncing plugins (the first run downloads them)…"
   "$HERE/vimforge" --headless "+Lazy! sync" +qa 2>/dev/null || \\
     echo "plugin sync reported errors; inside the editor run :Lazy sync"
 fi
 
-echo ""
-echo "VimForge is ready.  Start it with:"
-echo "  vimforge              terminal editor"
-echo "  vimforge file.f90"
-echo ""
-echo "Optional AI features need the harness CLI:"
-echo "  npm install -g @deepseek-ai/dsh"
+cat <<EOF
+
+VimForge is ready.
+
+  vimforge              terminal editor
+  vimforge-gui          desktop window (Neovide)
+  vimforge file.f90
+
+Configuration and plugin data live inside this folder:
+  $HERE/config         Neovim config directory
+  $HERE/data           plugin and state data
+
+Your existing Neovim configuration was not touched.
+
+Optional: the AI panel and project analysis need the harness CLI
+  npm install -g @deepseek-ai/dsh
+then set an API key with :DshAuth and pick a model with <leader>dm.
+EOF
 `;
   await writeFile(path.join(dir, 'install.sh'), installSh, { mode: 0o755 });
 
   const ps1Launcher = `<#
-VimForge portable launcher (Windows). Uses the Neovim inside this bundle.
+VimForge portable launcher (Windows). Self-contained: uses the Neovim and the
+configuration inside this folder, and writes nothing outside it.
 #>
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -385,42 +514,180 @@ if (-not (Test-Path $nvim)) {
   }
 }
 
-# Isolate from any existing Neovim configuration.
-$env:NVIM_APPNAME = 'dshstudio'
+# Neovim reads $XDG_CONFIG_HOME/$NVIM_APPNAME, so the config directory must be
+# named 'dshstudio'. Keeping it inside the bundle means nothing is written to the
+# user's home directory and an existing Neovim setup is untouched.
 $env:DSHSTUDIO_ROOT = $here
-$cfgRoot = if ($env:XDG_CONFIG_HOME) { $env:XDG_CONFIG_HOME } else { Join-Path $env:LOCALAPPDATA 'dshstudio-config' }
-$cfg = Join-Path $cfgRoot 'dshstudio'
+$env:XDG_CONFIG_HOME = Join-Path $here 'config'
+$cfg = Join-Path $env:XDG_CONFIG_HOME 'dshstudio'
 New-Item -ItemType Directory -Force -Path $cfg | Out-Null
 if (-not (Test-Path (Join-Path $cfg 'init.lua'))) {
   Copy-Item (Join-Path $here 'nvim-deepseek-studio\\*') $cfg -Recurse -Force
 }
+$env:XDG_DATA_HOME = Join-Path $here 'data'
+New-Item -ItemType Directory -Force -Path $env:XDG_DATA_HOME | Out-Null
+$env:NVIM_APPNAME = 'dshstudio'
 
 & $nvim @args
 `;
   await writeFile(path.join(dir, 'vimforge.ps1'), ps1Launcher);
 
-  await writeFile(path.join(dir, 'install.ps1'), `<#
-VimForge ${VERSION} portable install (Windows x64).
+  const ps1Gui = `<#
+VimForge desktop window (Windows, Neovide). Falls back to the terminal editor.
 #>
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
+$neovide = Join-Path $here 'neovide\\neovide.exe'
+if (-not (Test-Path $neovide)) { $neovide = Join-Path $here 'neovide.exe' }
+if (Test-Path $neovide) {
+  & $neovide @args
+} else {
+  Write-Host 'Neovide is not in this bundle; starting the terminal editor instead.'
+  & (Join-Path $here 'vimforge.ps1') @args
+}
+`;
+  await writeFile(path.join(dir, 'vimforge-gui.ps1'), ps1Gui);
+
+  // A double-clickable GUI launcher, since that is how most Windows users start.
+  await writeFile(path.join(dir, 'VimForge.cmd'), `@echo off
+rem Double-click to open the VimForge desktop window.
+setlocal
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0vimforge-gui.ps1" %*
+if errorlevel 1 pause
+`);
+
+  await writeFile(path.join(dir, 'install.ps1'), `<#
+VimForge ${VERSION} portable install (Windows x64).
+
+This bundle is already complete. This script warms the plugin cache and reports
+how to start the editor; a desktop shortcut is created for convenience.
+#>
+$ErrorActionPreference = 'Stop'
+$here = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+Write-Host 'Preparing VimForge (the first run downloads the plugins)…'
 & (Join-Path $here 'vimforge.ps1') --headless "+Lazy! sync" +qa
+if ($LASTEXITCODE -ne 0) {
+  Write-Host 'Plugin sync reported errors; inside the editor run :Lazy sync.'
+}
+
+try {
+  $shell = New-Object -ComObject WScript.Shell
+  $lnk = $shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) 'VimForge.lnk'))
+  $lnk.TargetPath = Join-Path $here 'VimForge.cmd'
+  $lnk.WorkingDirectory = $here
+  $lnk.Description = 'VimForge - Vim editor with DeepSeek Harness built in'
+  $lnk.Save()
+  Write-Host 'Desktop shortcut created.'
+} catch {
+  Write-Host ('Could not create a desktop shortcut: ' + $_.Exception.Message)
+}
+
 Write-Host ''
-Write-Host 'VimForge is ready. Start it with:'
-Write-Host ('  powershell -File "' + (Join-Path $here 'vimforge.ps1') + '" yourfile.f90')
+Write-Host 'VimForge is ready.'
 Write-Host ''
-Write-Host 'Optional AI features need the harness CLI:'
+Write-Host ('  double-click   ' + (Join-Path $here 'VimForge.cmd') + '   (desktop window)')
+Write-Host ('  terminal       powershell -File "' + (Join-Path $here 'vimforge.ps1') + '"')
+Write-Host ''
+Write-Host 'Configuration and plugin data stay inside this folder; your existing'
+Write-Host 'Neovim setup was not touched.'
+Write-Host ''
+Write-Host 'Optional AI features:'
 Write-Host '  npm install -g @deepseek-ai/dsh'
+Write-Host 'then :DshAuth to set an API key and <leader>dm to pick a model.'
 `);
 
   await writeFile(path.join(dir, 'install.cmd'), `@echo off
-rem VimForge ${VERSION} portable install (Windows x64).
+rem VimForge ${VERSION} portable install (Windows x64). Double-click me.
 setlocal
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"
 pause
 `);
 
   await writeFile(path.join(dir, 'README.txt'), README(platform));
+
+  // 5. An opt-in Neovide fetcher. Neovide is not bundled - it is a large
+  //    per-platform binary and the terminal editor needs nothing extra - but the
+  //    bundle can fetch it on request so a user gets the standalone window with
+  //    one command.
+  const neovideSh = `#!/usr/bin/env bash
+# Fetch the Neovide GUI front-end into this bundle.
+#
+#   ./scripts/get-neovide.sh
+#
+# Neovide is not bundled because it is a large per-platform binary and the
+# terminal editor works without it. On macOS the upstream artifact is a .dmg,
+# which cannot be unpacked non-interactively; the script says so rather than
+# pretending to succeed.
+set -euo pipefail
+HERE="$(cd "$(dirname "\${BASH_SOURCE[0]}")/.." && pwd)"
+DEST="$HERE/neovide"
+mkdir -p "$DEST"
+
+API="https://api.github.com/repos/neovide/neovide/releases/latest"
+if command -v curl >/dev/null 2>&1; then DL="curl -fL --retry 3 -o"; elif command -v wget >/dev/null 2>&1; then DL="wget -q -O"; else
+  echo "need curl or wget" >&2; exit 1
+fi
+
+json="$(mktemp)"
+if command -v curl >/dev/null 2>&1; then curl -fsSL "$API" -o "$json"; else wget -q -O "$json" "$API"; fi
+
+case "$(uname -s)" in
+  Linux)  pattern='neovide.AppImage' ;;
+  Darwin) pattern='apple-darwin.dmg' ;;
+  *) echo "unsupported platform for automatic Neovide install: $(uname -s)" >&2; exit 1 ;;
+esac
+
+url="$(grep -o '"browser_download_url": *"[^"]*"' "$json" | sed 's/.*"\\(https[^"]*\\)"/\\1/' | grep "$pattern" | head -n1 || true)"
+rm -f "$json"
+if [ -z "$url" ]; then echo "no Neovide asset matching $pattern found" >&2; exit 1; fi
+
+out="$DEST/$(basename "$url")"
+echo "downloading $(basename "$url")"
+$DL "$out" "$url"
+
+case "$out" in
+  *.AppImage) chmod +x "$out"; ln -sf "$out" "$DEST/neovide"; echo "installed $DEST/neovide" ;;
+  *.dmg) echo "Downloaded a .dmg to $out"
+         echo "Open it, drag Neovide to Applications, then use vimforge-gui,"
+         echo "which also looks in /Applications/Neovide.app." ;;
+esac
+`;
+  await writeFile(path.join(dir, 'scripts', 'get-neovide.sh'), neovideSh, { mode: 0o755 });
+
+  const neovidePs1 = `<#
+Fetch the Neovide GUI front-end into this bundle (Windows).
+
+  powershell -ExecutionPolicy Bypass -File scripts\\get-neovide.ps1
+
+Neovide is not bundled because it is a large per-platform binary and the terminal
+editor works without it.
+#>
+$ErrorActionPreference = 'Stop'
+$here = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+$dest = Join-Path $here 'neovide'
+New-Item -ItemType Directory -Force -Path $dest | Out-Null
+
+$release = Invoke-RestMethod -Uri 'https://api.github.com/repos/neovide/neovide/releases/latest' \`
+  -Headers @{ 'User-Agent' = 'vimforge' }
+$asset = $release.assets | Where-Object { $_.name -eq 'neovide.exe.zip' } | Select-Object -First 1
+if (-not $asset) { $asset = $release.assets | Where-Object { $_.name -like '*win*x86_64*' } | Select-Object -First 1 }
+if (-not $asset) { throw 'no Windows Neovide asset found in the latest release' }
+
+$zip = Join-Path $env:TEMP $asset.name
+Write-Host ('downloading ' + $asset.name)
+Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zip -UseBasicParsing
+Expand-Archive -Path $zip -DestinationPath $dest -Force
+Remove-Item $zip -Force -ErrorAction SilentlyContinue
+
+if (Test-Path (Join-Path $dest 'neovide.exe')) {
+  Write-Host ('installed ' + (Join-Path $dest 'neovide.exe'))
+  Write-Host 'Run VimForge.cmd (or vimforge-gui.ps1) for the desktop window.'
+} else {
+  throw 'neovide.exe was not found in the downloaded archive'
+}
+`;
+  await writeFile(path.join(dir, 'scripts', 'get-neovide.ps1'), neovidePs1);
 
   // 5. Checksums for the bundle contents.
   const sums = [];

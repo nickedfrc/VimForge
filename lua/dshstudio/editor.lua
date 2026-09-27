@@ -176,16 +176,39 @@ end
 
 ---Friendly notice used by the FileChangedShellPost autocmd.
 ---@param name string|nil
-local function notify_reloaded(name)
+---Tell the user a buffer was reloaded, and warn when a reload did NOT happen.
+---
+---The dangerous case is an external writer (the agent, a formatter, another
+---editor) changing a file whose buffer has unsaved edits. Neovim then refuses to
+---reload, so the buffer keeps the old text and the next `:w` silently discards
+---whatever was written. Staying quiet there loses work, so this says plainly which
+---file, which side, and what to do.
+---@param name string|nil  the file reported by the event
+---@param reloaded boolean|nil  true when the buffer was actually reloaded
+local function notify_reloaded(name, reloaded)
   local util_ok, util = pcall(require, 'dshstudio.util')
-  if not (util_ok and type(util) == 'table' and type(util.notify) == 'function') then
-    return
+  local function say(message, level)
+    if util_ok and type(util) == 'table' and type(util.notify) == 'function' then
+      pcall(util.notify, message, level)
+    end
   end
+
   local label = name
   if type(label) ~= 'string' or label == '' then
     label = vim.fn.expand('%:t')
   end
-  pcall(util.notify, ('Reloaded %s from disk (it changed outside Neovim)'):format(label), 'warn')
+
+  if reloaded == false then
+    say(('%s changed on disk, but this buffer has unsaved changes, so it was NOT '
+      .. 'reloaded.\nSaving now (:w) would discard the on-disk version. Choose one:\n'
+      .. '  :e!          reload from disk, discarding your unsaved edits\n'
+      .. '  :w           keep your edits and overwrite the file\n'
+      .. '  :Diffsplit   compare the two versions first'):format(label),
+      vim.log.levels.WARN)
+    return
+  end
+
+  say(('Reloaded %s from disk (it changed outside Neovim)'):format(label), vim.log.levels.WARN)
 end
 
 ---Set treesitter folding for one window/buffer when a parser is available.
@@ -337,9 +360,23 @@ function M.setup()
   vim.api.nvim_create_autocmd('FileChangedShellPost', {
     group = group,
     callback = function(args)
-      notify_reloaded(args and args.file or nil)
+      notify_reloaded(args and args.file or nil, true)
     end,
     desc = 'DSH Studio: tell the user a buffer was reloaded',
+  })
+
+  -- Fires when a file changed on disk and Neovim decided what to do about it.
+  -- A buffer with unsaved changes is left alone, which is the case worth warning
+  -- about: the next write would discard the external change.
+  vim.api.nvim_create_autocmd('FileChangedShell', {
+    group = group,
+    callback = function(args)
+      local buf = args and args.buf
+      if buf and vim.api.nvim_buf_is_valid(buf) and vim.bo[buf].modified then
+        notify_reloaded(args.file, false)
+      end
+    end,
+    desc = 'DSH Studio: warn when an external change cannot be reloaded',
   })
 
   -- Trailing whitespace is removed only through an explicit command.

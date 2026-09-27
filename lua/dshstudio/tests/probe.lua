@@ -646,6 +646,35 @@ local function test_workspace_detection()
   pcall(vim.fn.delete, bare, 'rf')
 end
 
+---The approval mode decides whether the agent may change files at all, so it has
+---to be readable, settable to exactly the supported values, and refuse anything
+---else instead of silently falling back.
+local function test_approval_mode()
+  local session = require('dshstudio.core.session')
+  local config = require('dshstudio.config')
+
+  local original = session.approval_mode()
+  ok(type(original) == 'string', 'approval_mode reports a string')
+  ok(original == 'ask' or original == 'always' or original == 'never',
+    'approval_mode is one of the supported values')
+
+  -- Every supported value round-trips.
+  for _, mode in ipairs({ 'ask', 'always', 'never' }) do
+    ok(session.set_approval_mode(mode), ('set_approval_mode(%s) succeeds'):format(mode))
+    eq(session.approval_mode(), mode, ('approval_mode reports %s'):format(mode))
+    eq(config.get('auto_approve'), mode, ('config reflects %s'):format(mode))
+  end
+
+  -- Anything else is refused rather than guessed at.
+  ok(not session.set_approval_mode('sometimes'), 'an unknown mode is refused')
+  ok(not session.set_approval_mode(''), 'an empty mode is refused')
+  eq(session.approval_mode(), 'never', 'a refused change leaves the mode untouched')
+
+  -- Restore, so the rest of the suite is unaffected.
+  session.set_approval_mode(original)
+  eq(session.approval_mode(), original, 'the original mode is restored')
+end
+
 local function test_agent_discovery()
   local session = require('dshstudio.core.session')
   local argv, how = session.resolve_agent_command('acp')
@@ -712,6 +741,7 @@ local ALL = {
   ['headless: system output normalisation'] = test_headless_output_normalisation,
   ['symbols: BOM tolerance and module nesting'] = test_symbols_bom_and_merge,
   ['session: agent discovery'] = test_agent_discovery,
+  ['session: approval mode'] = test_approval_mode,
   ['session: workspace detection'] = test_workspace_detection,
   ['auth: keys, agent env and credential file'] = test_auth_keys,
 }

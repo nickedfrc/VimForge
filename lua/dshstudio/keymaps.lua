@@ -528,6 +528,11 @@ function M.setup()
       { 'dshstudio.core.session', 'pick_workspace' },
     })
   end, 'Choose the agent workspace (project directory)')
+  map('n', '<leader>dA', function()
+    try_list({
+      { 'dshstudio.core.session', 'pick_approval' },
+    })
+  end, 'Control whether the agent may edit files')
   map('n', '<leader>dK', function()
     local ok, auth = pcall(require, 'dshstudio.core.auth')
     if not ok then

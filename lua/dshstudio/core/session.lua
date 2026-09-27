@@ -365,6 +365,82 @@ function M.resolve_agent_command(profile)
   return nil, 'not found'
 end
 
+---How the agent's file changes are approved.
+---
+---Three states matter here:
+---   'ask'    every tool call waits for your decision (default)
+---   'always'  the agent edits files without asking
+---   'never'   tool calls are refused, so the agent can only read
+---
+---This is the switch between "it explains changes for me to apply" and "it edits my
+---code directly". Reading the value that is actually in force is part of the
+---diagnostic surface, so there is no guessing which mode is active.
+---@return string
+function M.approval_mode()
+  local ok, mod = pcall(require, 'dshstudio.config')
+  if ok and mod.get then
+    local value = mod.get('auto_approve')
+    if value == 'always' or value == 'never' or value == 'ask' then return value end
+  end
+  return 'ask'
+end
+
+---Set the approval mode for subsequent tool calls.
+---The harness asks per call, so this takes effect without restarting the session.
+---@param mode string  'ask' | 'always' | 'never'
+---@return boolean ok
+function M.set_approval_mode(mode)
+  if mode ~= 'ask' and mode ~= 'always' and mode ~= 'never' then return false end
+  local ok, mod = pcall(require, 'dshstudio.config')
+  if ok and mod.set then
+    local set_ok = pcall(mod.set, 'auto_approve', mode)
+    if set_ok then
+      M.emit('approval_mode', mode)
+      return true
+    end
+  end
+  return false
+end
+
+---Interactive approval-mode picker, with the consequences spelled out.
+function M.pick_approval()
+  local current = M.approval_mode()
+  local items = {
+    {
+      mode = 'ask',
+      label = ('ask        — approve each file change myself%s'):format(current == 'ask' and '   (current)' or ''),
+    },
+    {
+      mode = 'always',
+      label = ('always     — let the agent edit files without asking%s'):format(current == 'always' and '   (current)' or ''),
+    },
+    {
+      mode = 'never',
+      label = ('never      — read-only: refuse all file changes%s'):format(current == 'never' and '   (current)' or ''),
+    },
+  }
+  vim.ui.select(items, {
+    prompt = 'How should the agent\'s file changes be approved?',
+    format_item = function(item) return item.label end,
+  }, function(choice)
+    if not choice then return end
+    if M.set_approval_mode(choice.mode) then
+      local note = ''
+      if choice.mode == 'always' then
+        note = '\nThe agent can now create and modify files in the workspace '
+          .. '(' .. vim.fn.fnamemodify(M.workspace(), ':~') .. ') without asking. '
+          .. 'It still has to read a file before editing it, and writes stay inside '
+          .. 'the workspace. Switch back with <leader>dA.'
+      elseif choice.mode == 'never' then
+        note = '\nAll file changes are refused; the agent can still read and explain.'
+      end
+      util().notify(('File-change approval: %s%s'):format(choice.mode, note), vim.log.levels.INFO)
+    else
+      util().notify('could not change the approval mode', vim.log.levels.ERROR)
+    end
+  end)
+end
+
 ---Describe the resolved agent command for the status view.
 function M.agent_status()
   local argv, how = M.resolve_agent_command()

@@ -89,8 +89,9 @@ local function header_lines()
   -- which project the agent is actually looking at.
   if s and s.workspace then
     local ws = s.workspace()
-    table.insert(out, ('  workspace: %s   (:DshWorkspace to change)'):format(
-      vim.fn.fnamemodify(ws, ':~')))
+    local mode = s.approval_mode and s.approval_mode() or 'ask'
+    table.insert(out, ('  workspace: %s'):format(vim.fn.fnamemodify(ws, ':~')))
+    table.insert(out, ('  file changes: %s   (:DshWorkspace / :DshApprove)'):format(mode))
   end
   table.insert(out, '')
   if s and not s.is_connected() then

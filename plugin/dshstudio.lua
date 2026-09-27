@@ -54,6 +54,19 @@ if sidebar then
 end
 
 if session then
+  define('DshApprove', function(cmd)
+    if cmd.args ~= '' then
+      local mode = cmd.args:lower()
+      if session.set_approval_mode(mode) then
+        notify('file-change approval: ' .. mode, vim.log.levels.INFO)
+      else
+        notify('usage: :DshApprove [ask|always|never]', vim.log.levels.WARN)
+      end
+    else
+      session.pick_approval()
+    end
+  end, { nargs = '?', desc = 'Control whether the agent may edit files without asking' })
+
   define('DshWorkspace', function(cmd)
     if cmd.args ~= '' then
       session.set_workspace(cmd.args)

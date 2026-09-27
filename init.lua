@@ -44,22 +44,75 @@ local lazypath = vim.fn.stdpath('data') .. '/lazy/lazy.nvim'
 -- clone can leave the directory present but empty, which would make this
 -- bootstrap skip the clone and then fail to load the plugin manager entirely.
 local lazy_entry = lazypath .. '/lua/lazy/init.lua'
-if not (vim.uv or vim.loop).fs_stat(lazy_entry) then
-  local repo = 'https://github.com/folke/lazy.nvim.git'
+
+---Run a git clone, returning (ok, output).
+---@param extra string[]  additional `-c key=value` overrides
+local function git_clone(extra)
+  local cmd = { 'git' }
+  vim.list_extend(cmd, extra or {})
   -- No `--branch`: lazy.nvim publishes only its default branch, and requesting a
   -- `stable` branch fails outright (verified: the ref does not exist).
-  local out = vim.fn.system({ 'git', 'clone', '--filter=blob:none', repo, lazypath })
-  if vim.v.shell_error ~= 0 then
-    vim.notify('Failed to clone lazy.nvim:\n' .. out, vim.log.levels.ERROR, { title = 'DSH Studio' })
-    -- Continue with built-in features only rather than refusing to start.
+  vim.list_extend(cmd, { 'clone', '--filter=blob:none', 'https://github.com/folke/lazy.nvim.git', lazypath })
+  local out = vim.fn.system(cmd)
+  return vim.v.shell_error == 0, out
+end
+
+if not (vim.uv or vim.loop).fs_stat(lazy_entry) then
+  local ok, out = git_clone(nil)
+  if not ok then
+    -- A stale proxy in the user's git config is the most common cause of a failed
+    -- first run (an unreachable http.proxy makes every clone fail). Retry once
+    -- with the proxy bypassed and let git pick its own TLS backend, which is
+    -- harmless when no proxy is configured.
+    local retry_ok, retry_out = git_clone({
+      '-c', 'http.proxy=',
+      '-c', 'https.proxy=',
+      '-c', 'http.sslBackend=openssl',
+    })
+    if retry_ok then
+      vim.schedule(function()
+        vim.notify(
+          'lazy.nvim was cloned with the configured git proxy bypassed: your git '
+          .. 'config points at a proxy that is not reachable.\n'
+          .. 'If plugin installs are slow or fail later, unset it:\n'
+          .. '    git config --global --unset http.proxy\n'
+          .. '    git config --global --unset https.proxy',
+          vim.log.levels.WARN, { title = 'DSH Studio' })
+      end)
+    else
+      ok = false
+      out = out .. '\n--- retry with the proxy bypassed ---\n' .. retry_out
+    end
+  end
+  if not ok then
+    vim.schedule(function()
+      vim.notify(
+        'Could not download the plugin manager (lazy.nvim), so plugins are off.\n'
+        .. 'The editor, the symbol outline, the project tree, project analysis\n'
+        .. 'and the DeepSeek panel still work.\n\n'
+        .. 'To fix it, make git able to reach github.com. Usually:\n'
+        .. '    git config --global --unset http.proxy\n'
+        .. '    git config --global --unset https.proxy\n'
+        .. 'then restart and run :Lazy sync.\n\n'
+        .. 'git said:\n' .. tostring(out):sub(1, 400),
+        vim.log.levels.WARN, { title = 'DSH Studio' })
+    end)
   end
 end
 vim.opt.rtp:prepend(lazypath)
 
 local lazy_ok, lazy = pcall(require, 'lazy')
 if lazy_ok then
-  lazy.setup(load_module('dshstudio.plugins') or {}, {
-    install = { colorscheme = { 'tokyonight', 'habamax' } },
+  local ok, err = pcall(lazy.setup, load_module('dshstudio.plugins') or {}, {
+    install = {
+      colorscheme = { 'tokyonight', 'habamax' },
+      -- Do not attempt installs during setup. Plugins fetched without git
+      -- metadata (a tarball install, a vendored copy, an offline bundle) make
+      -- lazy's lockfile update call Git.info() on them, which returns nil and
+      -- aborts setup inside assert(). Missing plugins are still reported by
+      -- `:Lazy` and installed by `:Lazy sync` on request.
+      missing = false,
+    },
     checker = { enabled = false },
     change_detection = { notify = false },
     ui = { border = 'rounded' },
@@ -69,6 +122,44 @@ if lazy_ok then
       },
     },
   })
+  if not ok then
+    vim.schedule(function()
+      vim.notify('lazy.nvim setup failed: ' .. tostring(err)
+        .. '\nPlugins are loaded by the fallback loader instead; the editor, outline, '
+        .. 'project tree, project analysis and the DeepSeek panel are unaffected.',
+        vim.log.levels.WARN, { title = 'DSH Studio' })
+    end)
+    -- Make the already-downloaded plugins usable anyway.
+    local fallback = load_module('dshstudio.fallback')
+    if fallback and fallback.load_plugins then
+      pcall(fallback.load_plugins)
+    end
+  else
+    -- lazy.nvim only manages plugins it recognises as installed, which requires
+    -- git metadata. Plugins fetched as tarballs, vendored, or shipped inside an
+    -- offline bundle have none, so lazy leaves them off the runtime path and the
+    -- editor looks bare. Detect that and load them directly.
+    local on_rtp = 0
+    for _, dir in ipairs(vim.api.nvim_list_runtime_paths()) do
+      if dir:find('/lazy/', 1, true) and not dir:match('lazy%.nvim') then
+        on_rtp = on_rtp + 1
+      end
+    end
+    if on_rtp == 0 then
+      local fallback = load_module('dshstudio.fallback')
+      if fallback and fallback.load_plugins then
+        local loaded = select(2, pcall(fallback.load_plugins))
+        if type(loaded) == 'number' and loaded > 0 then
+          vim.schedule(function()
+            vim.notify(('%d plugins were found on disk but are not managed by lazy.nvim '
+              .. '(no git metadata), so they were loaded directly. Run :Lazy sync to '
+              .. 'have them managed normally.'):format(loaded),
+              vim.log.levels.INFO, { title = 'DSH Studio' })
+          end)
+        end
+      end
+    end
+  end
 else
   vim.notify('lazy.nvim unavailable — plugin features are disabled, core editor features remain.',
     vim.log.levels.WARN, { title = 'DSH Studio' })

@@ -374,19 +374,31 @@ end
 
 local function test_context_build()
   local ctx = require('dshstudio.core.context')
-  local buf = vim.api.nvim_create_buf(true, false)
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, {
+
+  -- Load a real file so the context has a path to attribute, but suppress
+  -- autocommands while doing it. Loading a file fires BufReadPost/BufFilePost,
+  -- and plugin autocommands answer those by shelling out (gitsigns probes git);
+  -- an error in such a callback aborts the load, which would make this test
+  -- depend on the installed plugin set and on being allowed to spawn processes.
+  local dir = vim.fn.stdpath('state') .. '/probe'
+  vim.fn.mkdir(dir, 'p')
+  local path = dir .. '/demo.f90'
+  local content = {
     'module demo', 'contains', '  subroutine hello()', '    print *, "hi"', '  end subroutine', 'end module',
-  })
-  vim.api.nvim_set_current_buf(buf)
-  vim.bo[buf].filetype = 'fortran'
-  vim.api.nvim_buf_set_name(buf, vim.fn.getcwd() .. '/demo.f90')
+  }
+  vim.fn.writefile(content, path)
+
+  local buf
+  vim.cmd('noautocmd edit ' .. vim.fn.fnameescape(path))
+  buf = vim.api.nvim_get_current_buf()
+  vim.cmd('noautocmd setlocal filetype=fortran')
+  eq(vim.api.nvim_buf_get_name(buf), path, 'test buffer has the file path')
 
   local text = ctx.build({ mode = 'file', include_buffers = false })
   ok(text:find('Editor context', 1, true) ~= nil, 'header present')
   ok(text:find('```fortran', 1, true) ~= nil, 'fenced with the fortran language')
   ok(text:find('subroutine hello', 1, true) ~= nil, 'file content included')
-  ok(text:find('demo.f90', 1, true) ~= nil, 'path attributed')
+  ok(text:find('demo%.f90') ~= nil, 'path attributed')
 
   local payload = ctx.compose_prompt('Explain this', { mode = 'file', include_buffers = false })
   ok(payload:find('## Request', 1, true) ~= nil, 'request section appended')
@@ -403,7 +415,7 @@ local function test_context_build()
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, huge)
   local capped = ctx.build({ mode = 'file', include_buffers = false })
   ok(#capped < 60000, ('context capped by byte budget (got %d)'):format(#capped))
-  pcall(vim.api.nvim_buf_delete, buf, { force = true })
+  pcall(vim.fn.delete, path)
 end
 
 ---The offline extractor must survive a UTF-8 BOM, which Windows editors add by

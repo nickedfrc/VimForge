@@ -375,10 +375,20 @@ local function fortran_module_entry(acc, name)
   return m
 end
 
-local function bump_call(acc, name, rel)
+---Record one call site.
+---
+---`line` matters: file-level attribution credited a call to every callable symbol
+---in the calling file, which produced backwards edges (a function "calling" the
+---`main` that calls it, because both lived in one C file). With the line recorded,
+---the call can be attributed to the symbol whose range encloses it.
+---@param acc table
+---@param name string  the callee
+---@param rel string   the calling file
+---@param line integer|nil  1-based line of the call
+local function bump_call(acc, name, rel, line)
   local e = acc.calls[name]
   if not e then
-    e = { count = 0, files = {}, _seen = {} }
+    e = { count = 0, files = {}, lines = {}, _seen = {}, _seen_line = {} }
     acc.calls[name] = e
   end
   e.count = e.count + 1
@@ -386,12 +396,87 @@ local function bump_call(acc, name, rel)
     e._seen[rel] = true
     e.files[#e.files + 1] = rel
   end
+  if line then
+    local key = rel .. ':' .. tostring(line)
+    if not e._seen_line[key] then
+      e._seen_line[key] = true
+      e.lines[#e.lines + 1] = { file = rel, line = line }
+    end
+  end
 end
 
 M.bump_call = bump_call
 
-local function process_fortran_file(f, acc)
-  if type(f) ~= 'table' or type(f.path) ~= 'string' then return end
+---Decide whether `name(...)` on a line is a call or an array reference.
+---
+---Fortran array element access has the same syntax as a function call, so
+---`state(1) = state(1) - k * dt` would otherwise report `state` as a callee. The
+---argument list is examined instead: an integer literal, a bare bound variable, a
+---slice (`a:b`), or an empty pair of parentheses is array syntax, while anything
+---with an operator, a real literal or a comma-separated expression is a call.
+---@param haystack string  lower-cased source line
+---@param name string
+---@param from integer  position to start searching from
+---@return boolean is_call
+local function looks_like_call(haystack, name, from)
+  local s = haystack:find(name .. '%s*%(', from)
+  if not s then return false end
+  local open = haystack:find('(', s + #name, true)
+  if not open then return false end
+  -- Match the closing parenthesis of this argument list.
+  local depth = 0
+  local close = nil
+  for i = open, #haystack do
+    local ch = haystack:sub(i, i)
+    if ch == '(' then
+      depth = depth + 1
+    elseif ch == ')' then
+      depth = depth - 1
+      if depth == 0 then
+        close = i
+        break
+      end
+    end
+  end
+  if not close then return false end
+  local args = trim(haystack:sub(open + 1, close - 1))
+
+  if args == '' then return false end                      -- a() -- index, not call
+  if args:match('^%d+$') then return false end              -- a(1)
+  if args:match('^%d+%s*:%s*%d*$') then return false end    -- a(1:2), a(1:)
+  if args:match('^:%s*%d+$') then return false end          -- a(:2)
+  if args == ':' then return false end                      -- a(:)
+  if args:match('^[%a_][%w_]*$') then return false end      -- a(n) -- bound variable
+
+  -- A real literal, an arithmetic operator or a comma means a call, because an
+  -- array element list cannot contain those.
+  return true
+end
+
+---Fortran declaration keywords that look like calls because of their parentheses.
+---`real, intent(in) :: x` and `real, dimension(n) :: a` are the usual false
+---positives once expression function references are scanned for callees.
+---
+---This table MUST be declared before the function that reads it. A `local`
+---declared further down the file is not in scope above its own declaration, so
+---the read resolves to a nil global and the whole scan throws inside the
+---surrounding pcall - silently producing an empty call graph.
+local FORTRAN_ATTRIBUTES = {
+  intent = true, dimension = true, allocatable = true, optional = true,
+  pointer = true, target = true, parameter = true, save = true, external = true,
+  intrinsic = true, public = true, private = true, protected = true,
+  contiguous = true, asynchronous = true, volatile = true, value = true,
+  bind = true, result = true, len = true, recursive = true,
+  pure = true, elemental = true, impure = true, module = true, procedure = true,
+  -- Intrinsic inquiry and manipulation functions: real calls, but not project
+  -- symbols, so they only add noise to a call tree.
+  -- (`kind` is deliberately absent: `kind(x)` is a common intrinsic, and
+  -- filtering it would also hide a project function of the same name.)
+  trim = true, ['len_trim'] = true, present = true, allocated = true,
+  associated = true, ['null'] = true, ['size'] = true, shape = true,
+}
+
+local function process_fortran_file(f, acc)  if type(f) ~= 'table' or type(f.path) ~= 'string' then return end
   local lines = read_lines(f.path)
   if not lines then return end
   local rel = f.rel or f.path
@@ -402,7 +487,7 @@ local function process_fortran_file(f, acc)
   end
   local seen_here = {}
 
-  for _, raw in ipairs(lines) do
+  for line_no, raw in ipairs(lines) do
     local code = strip_fortran_comment(raw)
     local text = trim(code)
     if text ~= '' then
@@ -438,7 +523,61 @@ local function process_fortran_file(f, acc)
       for cname in lower:gmatch('%f[%w]call%f[%W]%s+([%w_]+)') do
         -- Skip type-bound calls: `call obj%method()`.
         if not lower:find('call%s+' .. cname .. '%%') then
-          bump_call(acc, cname, rel)
+          bump_call(acc, cname, rel, line_no)
+        end
+      end
+
+      -- Fortran also calls through expression function references, most often
+      -- `x = f(...)`, which the `call` scan above cannot see. Requiring an
+      -- assignment or an operator before the name keeps declarations
+      -- (`real :: f`) and type components (`obj%f(`) out of the results.
+      --
+      -- Type declarations are skipped: their parentheses are attribute syntax,
+      -- not calls. Fortran marks the declaration part with `::`, which is the
+      -- reliable signal - `real, intent(in) :: conc` has no assignment, while
+      -- `k = rate_law(...)` does. The attribute name filter below then removes
+      -- anything that still slips through.
+      local declares = lower:match('::') ~= nil
+        or lower:match('^%s*real%f[%W]') ~= nil
+        or lower:match('^%s*integer%f[%W]') ~= nil
+        or lower:match('^%s*logical%f[%W]') ~= nil
+        or lower:match('^%s*character%f[%W]') ~= nil
+        or lower:match('^%s*complex%f[%W]') ~= nil
+        or lower:match('^%s*double%s+precision%f[%W]') ~= nil
+        or lower:match('^%s*type%s*%(') ~= nil
+        or lower:match('^%s*class%s*%(') ~= nil
+      if not declares then
+        -- Iterate call-like references on this line. `find` with a capture returns
+        -- the capture's start, and the pattern consumes the character before the
+        -- name (an operator or a comma), so the cursor must advance to just before
+        -- that position. Advancing by `name_start + #name` re-finds the same
+        -- prefix and the loop never terminates; `fuel` is a hard stop so a future
+        -- pattern change cannot hang the scanner.
+        local cursor = 1
+        local fuel = 0
+        while fuel < 64 do
+          fuel = fuel + 1
+          local search_from = cursor > 1 and (cursor - 1) or 1
+          -- string.find returns the match START, then the match END, and only
+          -- then the captures. Reading `local pos, name = find(pat)` therefore
+          -- puts the END position in `name`, which is why the whole scan silently
+          -- produced nothing. The middle value is discarded explicitly.
+          local name_start, _match_end, cname = lower:find('[=+%*%/%-,%(]%s*([%a_][%w_]*)%s*%(', search_from)
+          if type(cname) ~= 'string' or type(name_start) ~= 'number' then break end
+          local next_cursor = name_start + 1
+          if next_cursor <= cursor then next_cursor = cursor + 1 end
+          cursor = next_cursor
+          if not FORTRAN_ATTRIBUTES[cname]
+            and not M.CALL_NOISE[cname]
+            and not M.is_stdlib(cname) then
+            local bound = lower:match('%%%s*' .. cname .. '%s*%(')
+            -- Search from the line start: the name was already isolated by the
+            -- pattern above and its '(' comes after the name, so a start position
+            -- at or past the name would never find it.
+            if not bound and looks_like_call(lower, cname, 1) then
+              bump_call(acc, cname, rel, line_no)
+            end
+          end
         end
       end
 
@@ -542,7 +681,7 @@ local function process_c_file(f, acc, resolve_include)
   acc.includes[rel] = entry
   local seen = { ['local'] = {}, system = {} }
   local in_block = false
-  for _, raw in ipairs(lines) do
+  for line_no, raw in ipairs(lines) do
     local cleaned
     cleaned, in_block = clean_c_line(raw, in_block)
     local quoted = cleaned:match('^%s*#%s*include%s*"([^"]+)"')
@@ -564,7 +703,7 @@ local function process_c_file(f, acc, resolve_include)
       if text ~= '' and text:sub(1, 1) ~= '#' then
         for name in text:gmatch('([%a_][%w_]*)%s*%(') do
           if not M.CALL_NOISE[name] and not M.is_stdlib(name) then
-            bump_call(acc, name, rel)
+            bump_call(acc, name, rel, line_no)
           end
         end
       end
@@ -787,7 +926,7 @@ local function collect_calls(deps)
       if type(name) == 'string' and type(info) == 'table' then
         local e = merged[name]
         if not e then
-          e = { count = 0, files = {}, _seen = {} }
+          e = { count = 0, files = {}, lines = {}, _seen = {}, _seen_line = {} }
           merged[name] = e
         end
         e.count = e.count + (tonumber(info.count) or 0)
@@ -795,6 +934,16 @@ local function collect_calls(deps)
           if type(rel) == 'string' and not e._seen[rel] then
             e._seen[rel] = true
             e.files[#e.files + 1] = rel
+          end
+        end
+        -- Call sites, so the graph can be attributed per symbol rather than per file.
+        for _, site in ipairs(info.lines or {}) do
+          if type(site) == 'table' and type(site.file) == 'string' and type(site.line) == 'number' then
+            local key = site.file .. ':' .. tostring(site.line)
+            if not e._seen_line[key] then
+              e._seen_line[key] = true
+              e.lines[#e.lines + 1] = { file = site.file, line = site.line }
+            end
           end
         end
       end
@@ -808,15 +957,52 @@ local function collect_calls(deps)
       if type(d) == 'table' and d ~= deps and d.calls then absorb(d) end
     end
   end
-  for _, e in pairs(merged) do e._seen = nil end
+  for _, e in pairs(merged) do
+    e._seen = nil
+    e._seen_line = nil
+  end
   return merged
 end
 
 M.collect_calls = collect_calls
 
+---Choose the symbol that owns a call site.
+---
+---The tightest range wins, so a nested subroutine is preferred over the module
+---that contains it. Falls back to the file's only callable symbol, which is the
+---common case for a small file, and to nil when the file defines several and the
+---line falls outside all of them.
+---@param list table[]  symbols of the calling file
+---@param line integer  1-based line of the call
+---@return string|nil
+local function owner_of_call(list, line)
+  local best, best_span = nil, nil
+  local callables = {}
+  for _, s in ipairs(list or {}) do
+    if type(s) == 'table' and type(s.name) == 'string' and CALLABLE_KINDS[s.kind] then
+      callables[#callables + 1] = s
+      local start = tonumber(s.line)
+      local stop = tonumber(s.end_line) or start
+      if start and line >= start and line <= stop then
+        local span = stop - start
+        if not best_span or span < best_span then
+          best, best_span = s.name, span
+        end
+      end
+    end
+  end
+  if best then return best end
+  if #callables == 1 then return callables[1].name end
+  return nil
+end
+
 ---Adjacency list of the call graph, standard-library names removed.
----Calls are attributed to every callable symbol defined in a file that calls
----them (an approximation: the scanners do not record call sites per symbol).
+---
+---Calls are attributed to the symbol whose range encloses the call site, which
+---needs the line recorded by the scanners. When a call site has no line (an older
+---deps table, or a language whose scanner does not record one) the file's single
+---callable symbol is used; a file that defines several and yields no enclosing
+---range contributes no edge rather than a wrong one.
 ---@param deps table|table[] one deps table or a list of them
 ---@param symbols_by_file table
 ---@param on_done fun(adjacency:table)|nil
@@ -826,6 +1012,7 @@ function M.call_graph(deps, symbols_by_file, on_done)
   local ok = pcall(function()
     local call_sets = collect_calls(deps)
     local file_syms = {}
+    local file_callables = {}
     for rel, list in pairs(symbols_by_file or {}) do
       if type(list) == 'table' then
         local names = {}
@@ -841,6 +1028,7 @@ function M.call_graph(deps, symbols_by_file, on_done)
         end
         table.sort(names)
         file_syms[rel] = names
+        file_callables[rel] = list
       end
     end
 
@@ -857,22 +1045,37 @@ function M.call_graph(deps, symbols_by_file, on_done)
       for _, nm in ipairs(names) do node(nm) end
     end
 
+    local function link(caller, cname)
+      if caller == cname then return end
+      local from = node(caller)
+      local to = node(cname)
+      if not from._out[cname] then
+        from._out[cname] = true
+        from.calls[#from.calls + 1] = cname
+      end
+      if not to._in[caller] then
+        to._in[caller] = true
+        to.called_by[#to.called_by + 1] = caller
+      end
+    end
+
     for cname, info in pairs(call_sets) do
       if not M.is_stdlib(cname) and not M.CALL_NOISE[cname] then
         node(cname)
-        for _, rel in ipairs(info.files) do
-          for _, caller in ipairs(file_syms[rel] or {}) do
-            if caller ~= cname then
-              local from = node(caller)
-              local to = node(cname)
-              if not from._out[cname] then
-                from._out[cname] = true
-                from.calls[#from.calls + 1] = cname
-              end
-              if not to._in[caller] then
-                to._in[caller] = true
-                to.called_by[#to.called_by + 1] = caller
-              end
+        local used_site = false
+        for _, site in ipairs(info.lines or {}) do
+          local owner = owner_of_call(file_callables[site.file] or {}, site.line)
+          if owner then
+            link(owner, cname)
+            used_site = true
+          end
+        end
+        if not used_site then
+          -- No usable call-site line: fall back to file-level attribution, which
+          -- is coarse but never empty.
+          for _, rel in ipairs(info.files) do
+            for _, caller in ipairs(file_syms[rel] or {}) do
+              link(caller, cname)
             end
           end
         end

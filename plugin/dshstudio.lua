@@ -244,6 +244,28 @@ if project_tree then
   end, { desc = 'Re-index the project symbol tree' })
 end
 
+-- Program tree: a call hierarchy and declaration tree for a chosen file or folder.
+local calltree = safe_require('dshstudio.ui.calltree')
+if calltree then
+  define('DshTree', function(cmd)
+    local target = cmd.args ~= '' and vim.fn.fnamemodify(vim.fn.expand(cmd.args), ':p') or nil
+    if cmd.bang then
+      calltree.open(target, 'symbols')
+    else
+      calltree.open(target)
+    end
+  end, {
+    nargs = '?', bang = true, complete = 'file',
+    desc = 'Program tree for a file or folder (add ! for the symbol tree)',
+  })
+  define('DshTreeFile', function() calltree.current_file() end,
+    { desc = 'Program tree for the current file' })
+  define('DshTreeFolder', function() calltree.current_folder() end,
+    { desc = 'Program tree for the current file\'s project folder' })
+  define('DshTreePick', function() calltree.pick_target() end,
+    { desc = 'Ask for a file or folder, then show its program tree' })
+end
+
 -- ---------------------------------------------------------------------------
 -- Diagnostics and self-check
 -- ---------------------------------------------------------------------------

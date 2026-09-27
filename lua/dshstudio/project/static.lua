@@ -16,6 +16,14 @@ local M = {}
 
 local uv = vim.uv or vim.loop
 
+-- Content sniffing, for the Fortran source form and for file names that do not
+-- identify a language. Guarded: this module must keep working without it.
+local sniff = nil
+do
+  local ok, mod = pcall(require, 'dshstudio.project.sniff')
+  if ok and type(mod) == 'table' then sniff = mod end
+end
+
 local BATCH = 40
 local MAX_LINES_BYTES = 8 * 1024 * 1024
 
@@ -75,7 +83,17 @@ local function normalize_rel(p)
   return table.concat(parts, '/')
 end
 
-local function strip_fortran_comment(line)
+---The code part of one Fortran line, honouring the source form.
+---
+---In fixed form a line starting with `C`, `c`, `*` or `!` is a comment, and
+---columns 1-6 are a label field rather than code. Ignoring that is what produced
+---twenty calls that do not exist in the GAMESS-style deck this was debugged on:
+---each was a `CALL` written inside a `C`-prefixed comment line.
+---@param line string
+---@param form string|nil 'fixed'|'free'
+---@return string
+local function strip_fortran_comment(line, form)
+  if sniff then return sniff.fortran_code(line, form or 'free') end
   local s = tostring(line or '')
   local quote = nil
   local i = 1
@@ -487,6 +505,9 @@ local FORTRAN_ATTRIBUTES = {
 local function process_fortran_file(f, acc)  if type(f) ~= 'table' or type(f.path) ~= 'string' then return end
   local lines = read_lines(f.path)
   if not lines then return end
+  -- The source form decides which of these lines are code at all, so it is
+  -- settled once per file rather than per line.
+  local form = sniff and sniff.fortran_form(lines) or 'free'
   local rel = f.rel or f.path
   local uses_here = acc.uses[rel]
   if not uses_here then
@@ -496,7 +517,7 @@ local function process_fortran_file(f, acc)  if type(f) ~= 'table' or type(f.pat
   local seen_here = {}
 
   for line_no, raw in ipairs(lines) do
-    local code = strip_fortran_comment(raw)
+    local code = strip_fortran_comment(raw, form)
     local text = trim(code)
     if text ~= '' then
       local lower = text:lower()

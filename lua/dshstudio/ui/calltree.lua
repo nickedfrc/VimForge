@@ -68,8 +68,10 @@ function M.build(target, on_done)
     -- A single file: present it as a one-entry scan so every later stage works
     -- the same way for both targets.
     local rel = vim.fn.fnamemodify(target, ':t')
-    local lang = scan.lang_for and scan.lang_for(target, rel) or 'other'
     local lines = vim.fn.readfile(target)
+    -- Pass the content so a name like `deck.src` is classified rather than
+    -- skipped: the extension alone does not name a language.
+    local lang = scan.lang_for and scan.lang_for(target, rel, lines) or 'other'
     scan_result = {
       root = vim.fn.fnamemodify(target, ':h'),
       files = { { path = target, rel = rel, lang = lang, ext = vim.fn.fnamemodify(target, ':e'),

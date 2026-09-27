@@ -16,6 +16,14 @@ local M = {}
 
 local uv = vim.uv or vim.loop
 
+-- Pure content sniffing, for the file names that do not identify a language.
+-- Guarded because the scanner promises to work even when a module is missing.
+local sniff = nil
+do
+  local ok, mod = pcall(require, 'dshstudio.project.sniff')
+  if ok and type(mod) == 'table' then sniff = mod end
+end
+
 M.MAX_DEPTH = 48
 
 -- Directories that are never descended into (matched by basename).
@@ -134,11 +142,18 @@ end
 
 M.ignore_matches = ignore_matches
 
----Language of a file, from its name (and optionally a pre-split extension).
+---Language of a file, from its name and - when the name is not enough - from its
+---opening lines.
+---
+---`.src`, `.inc` and `.ins` are shared by Fortran, C and C++ projects, and legacy
+---scientific decks hide behind them, so those names are resolved by content.
+---`head` is optional and only read for such names, so the common path costs
+---nothing extra.
 ---@param path string
 ---@param name string|nil
+---@param head string|string[]|nil the start of the file, or its first lines
 ---@return string
-function M.lang_for(path, name)
+function M.lang_for(path, name, head)
   local ok, lang = pcall(function()
     local n = name or basename(path)
     local lower = n:lower()
@@ -148,6 +163,13 @@ function M.lang_for(path, name)
     if ext ~= '' and M.LANG_BY_EXT[ext] then return M.LANG_BY_EXT[ext] end
     -- `CMakeLists.txt` and friends may arrive with a directory prefix only.
     if lower == 'cmakelists.txt' then return 'cmake' end
+    if sniff and ext ~= '' and sniff.AMBIGUOUS_EXT[ext] then
+      -- With nothing to read there is nothing to decide on, and guessing would
+      -- be worse than the previous answer of "unrecognised".
+      if head == nil then return 'other' end
+      local detected = sniff.detect(head)
+      if detected then return detected end
+    end
     return 'other'
   end)
   if ok and type(lang) == 'string' then return lang end
@@ -262,8 +284,6 @@ M.count_lines = count_lines
 
 ---Build one file entry. Returns nil plus a reason when the file is skipped.
 local function build_entry(abs, rel, name, max_bytes)
-  local lang = M.lang_for(abs, name)
-
   local size = nil
   local stat_ok, st = pcall(uv.fs_stat, abs)
   if stat_ok and st and st.type == 'file' then size = tonumber(st.size) end
@@ -271,6 +291,12 @@ local function build_entry(abs, rel, name, max_bytes)
 
   local data, reason = read_stats(abs, max_bytes)
   if not data then return nil, reason end
+
+  -- The language is decided after the read, not before: a name like `foo.src`
+  -- says nothing about the language, and the first lines have to settle it. The
+  -- scanner already reads every file once to count its lines, so this costs no
+  -- extra I/O.
+  local lang = M.lang_for(abs, name, data)
 
   if lang == 'other' or lang == 'config' then
     if data:find('%z') then lang = 'binary' end

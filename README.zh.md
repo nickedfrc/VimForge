@@ -73,6 +73,25 @@
 - 走离线解析器，**不需要语言服务器**
 - 回车跳转符号 / 折叠目录 / 打开文件
 
+### 针对单个文件或文件夹的程序树
+
+`:DshTree [路径]` 回答的是"**这一处**里面有什么、谁调用了谁"，而不是整个工程：
+
+| 命令 | 作用对象 |
+|---|---|
+| `:DshTree [路径]` | 指定的文件或文件夹（默认当前文件所在目录） |
+| `:DshTree! [路径]` | 同上，但直接打开符号视图 |
+| `:DshTreeFile` | 当前缓冲区的文件 |
+| `:DshTreeFolder` | 当前文件所在的工程目录 |
+| `:DshTreePick` | 先问你要哪个路径 |
+
+两种视图，`Tab` 切换。**调用视图**把找到的入口层层展开，每个符号下面列出它调用的符号，
+可以从 `main` 一路往下追；**符号视图**是同一个目标的声明树（模块、类型、接口、子程序、函数）。
+回车展开节点或跳到定义，`r` 刷新，`q` 关闭。
+
+全程离线，用的是和大纲同一套提取器，不需要语言服务器。
+调用归属按行记录，所以一个符号只记它**自己函数体里**的调用，不会把嵌套在里面的子程序的调用算到它头上。
+
 ### DeepSeek 面板
 
 `<leader>dd` 打开右侧面板（对话区 + 输入区），底层直接说 **ACP 协议**
@@ -264,6 +283,7 @@ dshstudio-gui mycode.f90     # 独立窗口打开（替换 Notepad 的用法）
 | `<leader>da` | 就选中的代码提问 |
 | `<leader>dp` | 工程解析菜单 |
 | `<leader>o` | 开关符号大纲（子程序/函数列表） |
+| `:DshTree` | 程序树：指定文件或文件夹的调用层级与符号 |
 | `<leader>dm` | 切换模型 |
 | `:DshHealth` | 查看语言服务器、解析器、CLI 探测结果 |
 | `:DshSelfTest` | 跑离线协议自检 |
@@ -294,14 +314,50 @@ clangd 靠 `compile_commands.json` 找头文件。CMake 工程配置时加
 
 现成配置在 Fortran 上最容易崩，这里做了针对性处理：
 
-- **自由格式 / 固定格式自动判别**：先看扩展名，`.f` 这类含糊的再看内容特征。
+- **自由格式 / 固定格式自动判别**：判别规则只有一份（`dshstudio.project.sniff`），
+  所以**编辑器的高亮和工程分析读同一份文件的方式永远一致**。
+  `.f90`/`.f95`/`.f03`/`.f08` 直接认定为自由格式；其余的看内容。
   固定格式保持 tab 不展开、缩进 6 列（尊重列规则），自由格式 2 列缩进。
   读文件时还会纠正文件类型，修掉 `.F90` / `.f` 的判别竞态。
+- **老式文件名**：GAMESS 这类程序用 `foo.src` 命名源码、`bar.inc` 命名 include，
+  这些名字本身不说明语言，Neovim 干脆不给文件类型。现在改成按前几行判断，
+  于是高亮、缩进、语言服务器、语法解析器都能用上，工程分析也不再跳过它们。
+  详见 [老式源码与固定格式](#老式源码与固定格式)。
 - `<leader>lf` 根据你的 include 路径生成 `.fortls`。
 - **离线符号提取**识别 `subroutine`、`function`、`program`、`module`、
   派生 `type`、`interface`，包括 `recursive` / `pure` / `elemental` 前缀、
   `module procedure`、跨行签名，并按 `contains` 嵌套把子程序归属到所属模块。
   所以**没有 fortls 也能看到完整的子程序列表**。
+
+## 老式源码与固定格式
+
+Fortran 77 把语义放在**列**上：第 1 列是 `C`、`c`、`*` 或 `!` 就整行是注释，
+第 6 列是续行标记，语句从第 7 列开始。按自由格式去读不会报错，而是**安静地读错**。
+在一份 7785 行的 GAMESS 风格 deck 上，自由格式读法把注释行里写的 20 个 `CALL`
+当成了 20 个真实调用。
+
+这些规则只实现一次（`lua/dshstudio/project/sniff.lua`），三处共用：
+
+| 使用方 | 决定什么 |
+|---|---|
+| `lang.lua` | 缓冲区的文件类型与 Fortran 格式 |
+| `project/symbols.lua` | 哪些行是声明 |
+| `project/static.lua` | 哪些行是 `use` / `call` / `include` |
+
+**判断格式。** `.f90`/`.f95`/`.f03`/`.f08` 一律算自由格式；其余的看内容，
+用"语句是否出现在第 7 列"作为**精确判据**：固定格式要求所有语句都在第 7 列开始，
+因此同一个关键字出现在别的缩进位置就证明是自由格式。
+这条判据同时避免了把自由格式里的 `contains`、`character` 误当成第 1 列的 `C` 注释。
+
+**名字不说明语言的文件。** `.src`、`.inc`、`.ins` 在 Fortran / C / C++ 工程里都在用，
+所以按内容判断，而且**只在证据明确时才下结论**，含糊的文件宁可不动。
+一份 `.src` deck 会以 Fortran 打开并使用正确的列规则，一个 `.inc` 的 C 头文件会以 C 打开。
+判别必须保守，因为"像 Fortran"的信号到处都是：Lua 也用 `end` 结束块、
+`function` 是 Lua 关键字、Markdown 的列表项以 `*` 开头、`class` 属于 C++ 也属于 Python。
+
+固定格式 Fortran **故意跳过 tree-sitter**：该语法树只描述自由格式，
+在固定格式 deck 上它的输出不只是漏掉声明，而是描述了另一段文本，
+合并进来会凭空造出符号。正则提取器两种格式都懂，交给它做。
 
 ## 配置
 
@@ -407,6 +463,7 @@ nvim-deepseek-studio/
       headless.lua          一次性 Harness 任务（工程解析）
     project/
       scan.lua              目录扫描与语言统计
+      sniff.lua             按内容判断语言与 Fortran 格式
       symbols.lua           离线符号提取
       static.lua            USE / #include / import 与调用图
       report.lua            Markdown 报告生成
@@ -414,6 +471,8 @@ nvim-deepseek-studio/
     ui/
       sidebar.lua           DeepSeek 面板
       outline.lua           子程序/函数树
+      calltree.lua          程序树（调用层级 + 符号）
+      project_tree.lua      全工程符号树
     user.example.lua        个人配置模板（复制成 user.lua）
     tests/probe.lua         离线自检
 scripts/                    安装脚本（Windows PowerShell / Unix bash）
@@ -435,8 +494,13 @@ docs/MIGRATING.md           从你自己的 vim 配置迁移
 **clangd 找不到头文件。** 用 `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON` 重新配置，
 或者设置 `extra_include_dirs` 后跑 `<leader>lc`。
 
-**固定格式 Fortran 高亮不对。** 格式判别靠扩展名加内容特征，可以手工指定：
-`:let b:fortran_fixed_source = 1` 或 `:let b:fortran_free_source = 1`。
+**固定格式 Fortran 高亮不对。** 格式判别先看扩展名、再看内容，内置语法文件自己猜错时
+会自动重新加载。也可以手工指定：`:let b:fortran_fixed_source = 1`
+或 `:let b:fortran_free_source = 1`。
+
+**`.src` / `.inc` 文件打开后没有高亮。** 这类文件是按内容判断的，证据不明确时不会硬猜。
+用 `:set filetype?` 看当前类型；如果是空的，说明前几行没能确定语言，
+可以手工设一次 `:setf fortran`（或 `c`），或者在文件里加一个 `modeline`。
 
 **插件没装上。** 在编辑器里执行 `:Lazy sync`。有代理就先设 `HTTPS_PROXY`。
 

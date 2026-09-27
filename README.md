@@ -91,6 +91,29 @@ Fortran/C project needs, because a subroutine's home file is rarely obvious.
 - Built from the offline extractor, so no language server is required
 - `Enter` jumps to a symbol, folds a directory, or opens a file
 
+### Program tree for a file or folder
+
+`:DshTree [path]` answers "what is in here, and what calls what" for **one target**
+rather than the whole project:
+
+| Command | Target |
+|---|---|
+| `:DshTree [path]` | the given file or folder (defaults to the current file's folder) |
+| `:DshTree! [path]` | the same, opening straight in the symbol view |
+| `:DshTreeFile` | the file in the current buffer |
+| `:DshTreeFolder` | the current file's project folder |
+| `:DshTreePick` | asks for a path first |
+
+Two views, `Tab` switches between them. The **call view** nests the entry points it
+finds and expands each symbol into the symbols that symbol calls, so a program can be
+followed from `main` downwards. The **symbol view** is the declaration tree (modules,
+types, interfaces, subroutines and functions) for the same target. `Enter` expands a
+node or jumps to the definition, `r` refreshes, `q` closes.
+
+It is offline, using the same extractor as the outline, so no language server has to
+be running. Call attribution is per line, so a symbol is credited with the calls in
+its own body rather than those of a procedure nested inside it.
+
 ### DeepSeek Harness panel
 
 `<leader>dd` opens a right-hand panel with a streaming transcript and an input
@@ -311,6 +334,7 @@ Then, inside the editor:
 | `<leader>da` | Ask about the current selection |
 | `<leader>dp` | Project analysis menu |
 | `<leader>o` | Toggle the symbol outline |
+| `:DshTree` | Program tree (call hierarchy and symbols) for a file or folder |
 | `<leader>dm` | Choose the model |
 | `:DshHealth` | Show language servers, parsers, and CLI discovery |
 | `:DshSelfTest` | Run the offline protocol self-tests |
@@ -346,16 +370,61 @@ config.
 Fortran is where off-the-shelf setups usually fall apart, so this distribution
 handles it explicitly:
 
-- **Free vs fixed form detection.** Extension first, then a content heuristic for
-  ambiguous `.f` files. Fixed-form files keep tabs unexpanded and shift by 6 to
-  respect the column rules; free-form uses 2-space indents. The filetype is
-  corrected on read, which fixes `.F90`/`.f` detection races.
+- **Free vs fixed form detection.** The declaration and analysis rules live in one
+  place (`dshstudio.project.sniff`), so the editor never highlights a file
+  differently from the way the analysis reads it. Fixed-form files keep tabs
+  unexpanded and shift by 6 to respect the column rules; free-form uses 2-space
+  indents. The filetype is corrected on read, which fixes `.F90`/`.f` detection
+  races.
+- **Legacy source names.** A GAMESS-style deck is `foo.src`, an include is
+  `bar.inc` — names that state no language at all, and that Neovim leaves with an
+  empty filetype. Those are classified from their first lines instead, so they get
+  highlighting, indentation, the language server and the parser, and the project
+  analysis no longer skips them. See [Legacy and fixed-form sources](#legacy-and-fixed-form-sources).
 - **`<leader>lf`** writes a `.fortls` file with your include paths.
 - **Offline symbol extraction** recognises `subroutine`, `function`, `program`,
   `module`, derived `type`, and `interface` declarations — including `recursive`,
   `pure`, and `elemental` prefixes, `module procedure`, and multiline signatures —
   and tracks `contains` nesting so nested routines are attributed to their module.
   This gives you the subroutine list even without fortls.
+
+## Legacy and fixed-form sources
+
+Fortran 77 puts meaning in the columns: `C`, `c`, `*` or `!` in column 1 comments
+out the whole line, column 6 holds the continuation marker, and a statement
+begins at column 7. A reader that assumes free form gets this wrong silently — it
+does not fail, it reports the wrong thing. On a 7785-line GAMESS-style deck, a
+free-form reading turned twenty `CALL` statements written inside comment lines
+into twenty calls that do not exist.
+
+The rules are implemented once, in `lua/dshstudio/project/sniff.lua`, and used by
+all three consumers:
+
+| Consumer | What it decides |
+|---|---|
+| `lang.lua` | the buffer's filetype and Fortran source form |
+| `project/symbols.lua` | which lines hold declarations |
+| `project/static.lua` | which lines hold `use`, `call` and `include` |
+
+**Source form.** A `.f90`/`.f95`/`.f03`/`.f08` extension is free form by
+definition. Everything else is decided from content, using the column-7 rule as
+an exact discriminator: in fixed form every statement must start at column 7, so
+the same keyword at any other indentation proves free form. That is also what
+stops `contains` and `character` from being read as `C`-in-column-1 comments.
+
+**File names that state no language.** `.src`, `.inc` and `.ins` are shared by
+Fortran, C and C++ projects. They are classified by content, and only when the
+evidence is unambiguous — a file that could be anything is left alone rather than
+guessed at. A `.src` deck opens as Fortran with the correct column rules; a `.inc`
+C header opens as C. Detection is deliberately conservative, because the
+Fortran-ish signals are everywhere: `end` closes a block in Lua, `function` is a
+Lua keyword, `*` opens a Markdown bullet, and `class` belongs to C++ and Python
+alike.
+
+Tree-sitter is skipped for fixed-form Fortran on purpose. The grammar describes
+free form, so on a fixed-form deck its output does not merely miss declarations,
+it describes different text; merging that in would invent symbols. The regex
+extractor knows both forms and does the work.
 
 ## Offline symbol extraction
 
@@ -364,7 +433,11 @@ A hand-written extractor handles Fortran (case-insensitive, free and fixed form)
 C/C++ (return types, qualifiers, K&R-style braces, `class`/`struct`/`enum`/`union`,
 `#define`, namespaces) and Python (indentation-derived nesting for `def`, `async
 def`, `class`). Tree-sitter is used when a parser is present, but the regex path is
-the reliable baseline and is what the tests exercise.
+the reliable baseline and is what the tests exercise — and for fixed-form Fortran
+it is the only correct one.
+
+Files named `.src`, `.inc` or `.ins` are classified from their content before they
+reach the extractor, so legacy decks are analysed like any other source file.
 
 ## Configuration
 
@@ -479,6 +552,7 @@ nvim-deepseek-studio/
       headless.lua             one-shot harness tasks (project analysis)
     project/
       scan.lua                 tree walk, language stats
+      sniff.lua                language and Fortran source form from content
       symbols.lua              offline symbol extraction (Fortran/C/C++/Python)
       static.lua               USE / #include / import and call graphs
       report.lua               Markdown report builder
@@ -486,6 +560,8 @@ nvim-deepseek-studio/
     ui/
       sidebar.lua              the DeepSeek panel
       outline.lua              subroutine/function tree
+      calltree.lua             program tree (call hierarchy and symbols)
+      project_tree.lua         whole-project symbol tree
     tests/probe.lua            offline self-tests
 scripts/                       installers (Windows PowerShell, Unix bash)
 docs/ACP.md                    the verified ACP wire contract
@@ -510,8 +586,14 @@ file the offline scan may need a moment.
 `<leader>lc`.
 
 **Fixed-form Fortran is coloured wrongly.** The form is decided from the extension
-and content. Set it explicitly with `:let b:fortran_free_source = 1` or
+and then from content, and the syntax file is reloaded when its own guess differs.
+Set it explicitly with `:let b:fortran_free_source = 1` or
 `b:fortran_fixed_source = 1`.
+
+**A `.src` or `.inc` file opens with no highlighting.** It is classified from its
+content, so an ambiguous file is left alone rather than guessed at. Check the
+filetype with `:set filetype?`; if it is empty, the first lines did not identify
+the language — set it once with `:setf fortran` (or `c`), or add a `modeline`.
 
 **Plugins did not install.** Run `:Lazy sync` inside the editor. Behind a proxy,
 set `HTTPS_PROXY` before installing.

@@ -108,8 +108,10 @@ For CMake projects `<leader>lb` already passes that flag. Otherwise set
 
 ## Fortran is coloured or indented wrongly
 
-The form is decided from the extension, then from content for ambiguous `.f`
-files. Force it per buffer:
+The modern free-form extensions (`.f90`, `.f95`, `.f03`, `.f08`) are free form by
+definition. Everything else is decided from content by
+`lua/dshstudio/project/sniff.lua`, and the syntax file is reloaded when its own
+guess disagrees. Force it per buffer:
 
 ```vim
 :let b:fortran_free_source = 1
@@ -119,6 +121,31 @@ files. Force it per buffer:
 Fixed form keeps tabs unexpanded and shifts by 6 columns; free form uses 2. To fall
 back to the classic regex syntax file for a filetype, see
 [docs/MIGRATING.md](MIGRATING.md) section 4.
+
+## A `.src` or `.inc` file has no highlighting, or is missing from the analysis
+
+Those names state no language, so Neovim gives them no filetype and the project
+scanner used to skip them. They are now classified from their opening lines. If one
+still opens bare, the first lines did not identify the language clearly enough and
+the file was left alone rather than guessed at — which is deliberate, because
+`end`, `function`, `*` and `class` all look Fortran-ish in other languages.
+
+Check what was decided:
+
+```vim
+:set filetype?
+```
+
+If it is empty, set it once (`:setf fortran`, or `:setf c`) or add a `modeline` to
+the file. A Fortran deck that starts with column-1 `C` comments or column-7
+statements is classified on its own; see
+[Legacy and fixed-form sources](../README.md#legacy-and-fixed-form-sources).
+
+## A call graph shows calls that do not exist
+
+If a `CALL` only ever appears inside a comment in a fixed-form file, the file was
+read as free form. The source form is detected per file; confirm it with
+`:echo b:dshstudio_fortran_form` and force it as described above.
 
 ## fortls is not found
 

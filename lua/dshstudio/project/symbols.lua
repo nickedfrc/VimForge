@@ -18,6 +18,15 @@ local M = {}
 
 local uv = vim.uv or vim.loop
 
+-- Content sniffing, for the source form of a Fortran file and for the file
+-- names that do not identify a language. Guarded: the regex extractor is the
+-- contract here and must still work if this module cannot be loaded.
+local sniff = nil
+do
+  local ok, mod = pcall(require, 'dshstudio.project.sniff')
+  if ok and type(mod) == 'table' then sniff = mod end
+end
+
 local MAX_SIG = 160
 local MAX_LINES_BYTES = 8 * 1024 * 1024
 
@@ -176,7 +185,18 @@ local function fortran_prefix_ok(prefix)
   return false
 end
 
-local function strip_fortran_comment(line)
+---The code part of one Fortran line.
+---
+---`form` is 'fixed' or 'free'. Getting it wrong is not cosmetic: in fixed form a
+---line starting with `C`, `c`, `*` or `!` is a comment, so a commented-out
+---`SUBROUTINE` would otherwise be extracted as a real declaration, and columns
+---1-6 hold a label rather than code. Without the sniffing module the free-form
+---behaviour is the safe fallback, because it strips only a trailing `!`.
+---@param line string
+---@param form string|nil
+---@return string
+local function strip_fortran_comment(line, form)
+  if sniff then return sniff.fortran_code(line, form or 'free') end
   local s = tostring(line or '')
   local quote = nil
   local i = 1
@@ -249,7 +269,7 @@ local function fortran_match_procedure(s)
 end
 
 ---Signature for a Fortran definition, honouring free-form `&` continuations.
-local function fortran_signature(lines, i, code)
+local function fortran_signature(lines, i, code, form)
   local text = trim(code)
   local j = i
   local guard = 0
@@ -258,7 +278,7 @@ local function fortran_signature(lines, i, code)
     if nxt == nil then break end
     j = j + 1
     guard = guard + 1
-    local continuation = trim(strip_fortran_comment(nxt))
+    local continuation = trim(strip_fortran_comment(nxt, form))
     if continuation:sub(1, 1) == '&' then continuation = trim(continuation:sub(2)) end
     text = trim(text:sub(1, -2)) .. ' ' .. continuation
   end
@@ -270,7 +290,11 @@ local FORTRAN_CONTAINER_KIND = {
   subroutine = true, ['function'] = true,
 }
 
-local function extract_fortran(lines)
+---Extract Fortran declarations.
+---@param lines string[]
+---@param form string|nil 'fixed'|'free'
+---@return table[]
+local function extract_fortran(lines, form)
   local out = {}
   local stack = {}
 
@@ -312,7 +336,7 @@ local function extract_fortran(lines)
   }
 
   for i, raw in ipairs(lines) do
-    local code = strip_fortran_comment(raw)
+    local code = strip_fortran_comment(raw, form)
     local s = trim(code:lower())
     if s ~= '' then s = trim(s:gsub('^%d+%s+', '')) end
     if s ~= '' then
@@ -380,7 +404,7 @@ local function extract_fortran(lines)
             kind = kind,
             line = i,
             end_line = nil,
-            signature = fortran_signature(lines, i, code),
+            signature = fortran_signature(lines, i, code, form),
             parent = parent,
             scope = parent and 'contained' or 'global',
           }
@@ -1133,12 +1157,16 @@ end
 ---@param lang string
 ---@param lines string[]
 ---@return table[]
-local function extract_with_regex(lang, lines)
-  if lang == 'fortran' then return extract_fortran(lines) end
+local function extract_with_regex(lang, lines, form)
+  if lang == 'fortran' then return extract_fortran(lines, form) end
   if lang == 'python' then return extract_python(lines) end
   return extract_c(lines)
 end
 
+---Extract the symbols declared in one file.
+---@param path string
+---@param lang string
+---@return table[]
 function M.extract_file(path, lang)
   local result = {}
   local ok = pcall(function()
@@ -1147,8 +1175,20 @@ function M.extract_file(path, lang)
     local lines = read_lines(path)
     if not lines or #lines == 0 then return end
 
-    local regex_syms = extract_with_regex(lang, lines)
-    local ts_syms = try_treesitter(lang, lines)
+    -- A Fortran file's comment and column rules depend on its source form.
+    local form = nil
+    local use_ts = true
+    if lang == 'fortran' and sniff then
+      form = sniff.fortran_form(lines)
+      -- The Fortran tree-sitter grammar describes free form. On a fixed-form
+      -- deck its output is not merely incomplete, it describes different text,
+      -- so merging it would inject declarations that the file does not make.
+      -- The regex extractor knows both forms and is left to do the work.
+      if form == 'fixed' then use_ts = false end
+    end
+
+    local regex_syms = extract_with_regex(lang, lines, form)
+    local ts_syms = use_ts and try_treesitter(lang, lines) or nil
     -- Merge rather than picking one: whichever pass is more complete varies by
     -- grammar and by language.
     local syms = (ts_syms and #ts_syms > 0)
@@ -1177,7 +1217,8 @@ function M.extract_source(source, lang)
     if lines[#lines] == '' then lines[#lines] = nil end
     local syms
     if lang == 'fortran' then
-      syms = extract_fortran(lines)
+      local form = sniff and sniff.fortran_form(lines) or nil
+      syms = extract_fortran(lines, form)
     elseif lang == 'python' then
       syms = extract_python(lines)
     else

@@ -40,13 +40,27 @@ local function config()
   return { get = function(_, default) return default end }
 end
 
+---Content sniffing, shared with the project scanner so that the editor and the
+---analysis never disagree about what a file is. Guarded: the editor still works
+---without it, only the legacy-extension handling is lost.
+local function sniff()
+  local ok, mod = pcall(require, 'dshstudio.project.sniff')
+  if ok and type(mod) == 'table' then return mod end
+  return nil
+end
+
 -- ---------------------------------------------------------------------------
 -- Filetype detection
 -- ---------------------------------------------------------------------------
 
 ---Fortran source files can be fixed- or free-form, and the compiler decides by
 ---extension plus build flags. Getting this wrong breaks highlighting and
----indentation, so the extension wins first and a heuristic covers `.f`.
+---indentation, so the modern free-form extensions are taken as definitive and
+---everything else is decided from content.
+---
+---The content rules live in `dshstudio.project.sniff` and are the same ones the
+---symbol extractor and the static analysis use, so the editor never highlights a
+---file differently from the way the analysis reads it.
 ---@param buf integer|nil
 function M.fortran_form(buf)
   buf = buf or vim.api.nvim_get_current_buf()
@@ -55,23 +69,55 @@ function M.fortran_form(buf)
     or name:match('%.f08$') or name:match('%.f18$') then
     return 'free'
   end
+
+  local lines = vim.api.nvim_buf_get_lines(
+    buf, 0, math.min(500, vim.api.nvim_buf_line_count(buf)), false)
+  local sniff_mod = sniff()
+  if sniff_mod then return sniff_mod.fortran_form(lines) end
+
+  -- Without the sniffing module: `.f`, `.for` and `.ftn` are fixed form by
+  -- convention, and a `!` comment is the usual sign of free form.
   if name:match('%.f$') or name:match('%.for$') or name:match('%.ftn$') then
-    -- Older extensions are usually fixed form, but a long free-form line or a
-    -- `&` continuation is a strong signal otherwise.
-    local lines = vim.api.nvim_buf_get_lines(buf, 0, math.min(200, vim.api.nvim_buf_line_count(buf)), false)
-    local long_lines = 0
-    for _, line in ipairs(lines) do
-      if #line > 72 then long_lines = long_lines + 1 end
-    end
-    if long_lines > 3 then return 'free' end
     return 'fixed'
   end
-  -- `.F90`, `.F`, or a file with no recognised extension: decide from content.
-  local lines = vim.api.nvim_buf_get_lines(buf, 0, math.min(80, vim.api.nvim_buf_line_count(buf)), false)
   for _, line in ipairs(lines) do
     if line:match('^%s*!') then return 'free' end
   end
   return 'fixed'
+end
+
+---Set the filetype of a buffer whose extension does not identify a language.
+---
+---Neovim registers no filetype for `deck.src` or `header.inc`, so such a file
+---opens with no highlighting, no indent rules, no language server and no
+---tree-sitter parser - and the project analysis used to skip it as unreadable
+---too. That is exactly how legacy scientific code is named, so the first lines
+---decide instead.
+---@param buf integer|nil
+---@return string|nil the filetype that was set
+function M.sniff_filetype(buf)
+  buf = buf or vim.api.nvim_get_current_buf()
+  local sniff_mod = sniff()
+  if not sniff_mod then return nil end
+
+  local name = vim.api.nvim_buf_get_name(buf)
+  if name == '' then return nil end
+  local ext = name:lower():match('%.([%w_+%-]+)$')
+  if not ext or not sniff_mod.AMBIGUOUS_EXT[ext] then return nil end
+
+  -- Never overrule a filetype that detection, the user or another plugin chose.
+  local current = vim.bo[buf].filetype
+  if current ~= '' and current ~= 'text' and current ~= 'conf' then return nil end
+
+  local count = vim.api.nvim_buf_line_count(buf)
+  if count == 0 then return nil end
+  local lines = vim.api.nvim_buf_get_lines(buf, 0, math.min(200, count), false)
+  local lang = sniff_mod.detect(lines)
+  if not lang then return nil end
+  -- Assigning the filetype runs the same FileType chain a `.f90` or `.c` file
+  -- gets, so highlighting, indent, LSP and the parser all engage.
+  vim.bo[buf].filetype = lang
+  return lang
 end
 
 ---Force the right filetype for a buffer, working around old Vim script
@@ -285,8 +331,21 @@ function M.setup()
       end
       -- Fortran keywords are case-insensitive; the built-in syntax file needs
       -- to know it is not a Fortran 77 file to colour free-form continuations.
+      --
+      -- The syntax file reads b:fortran_fixed_source while it loads, and the
+      -- autocmd that loads it is registered before this one, so by the time we
+      -- get here it has already guessed - from the extension for a `.f` file,
+      -- or from the first five columns otherwise. When that guess disagrees with
+      -- the form detected above, the syntax file is reloaded so its column rules
+      -- describe the file that is actually open.
+      local want_fixed = (form == 'fixed') and 1 or 0
+      local guessed = vim.b[args.buf].fortran_fixed_source
       vim.b[args.buf].fortran_free_source = (form == 'free') and 1 or 0
-      vim.b[args.buf].fortran_fixed_source = (form == 'fixed') and 1 or 0
+      vim.b[args.buf].fortran_fixed_source = want_fixed
+      if vim.b[args.buf].current_syntax == 'fortran' and guessed ~= want_fixed then
+        pcall(vim.cmd, 'syntax clear')
+        pcall(vim.cmd, 'runtime! syntax/fortran.vim')
+      end
     end,
   })
 
@@ -295,6 +354,17 @@ function M.setup()
     group = group,
     callback = function(args)
       M.fix_fortran_filetype(args.buf)
+    end,
+  })
+
+  -- Extensions that name no language at all: `.src`, `.inc`, `.ins`. Neovim
+  -- leaves these with an empty filetype, which costs highlighting, indentation,
+  -- the language server and the parser, and used to cost the project analysis
+  -- too. The first lines decide instead.
+  vim.api.nvim_create_autocmd({ 'BufReadPost', 'BufNewFile' }, {
+    group = group,
+    callback = function(args)
+      M.sniff_filetype(args.buf)
     end,
   })
 
@@ -332,7 +402,7 @@ function M.setup()
   -- Re-evaluate the Fortran form after a file is written under a new name.
   vim.api.nvim_create_autocmd('BufWritePost', {
     group = group,
-    pattern = { '*.f', '*.for', '*.ftn', '*.f90', '*.F90' },
+    pattern = { '*.f', '*.for', '*.ftn', '*.f90', '*.F90', '*.src', '*.inc' },
     callback = function(args)
       vim.b[args.buf].dshstudio_fortran_form = M.fortran_form(args.buf)
     end,

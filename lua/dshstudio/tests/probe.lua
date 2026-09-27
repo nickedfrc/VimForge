@@ -775,6 +775,92 @@ local function test_agent_discovery()
 end
 
 -- ---------------------------------------------------------------------------
+-- Legacy source sniffing
+-- ---------------------------------------------------------------------------
+
+---`.src` and `.inc` name no language, and legacy decks are fixed-form Fortran
+---where columns carry meaning. Both mistakes are silent: an unclassified file
+---is skipped by the analysis, and a fixed-form file read as free form hides the
+---whole line behind a column-1 `C` comment or mistakes a comment for code.
+local function test_sniffing()
+  local sniff = require('dshstudio.project.sniff')
+
+  -- A GAMESS-style fixed-form deck: column-1 comments, statements at column 7.
+  local deck = {
+    'C*MODULE RASS    *DECK SREAD',
+    'C> @brief   Read all FCSCF input keyword groups.',
+    'C     CALL FAKE_CALL',
+    '      SUBROUTINE SREAD',
+    '      IMPLICIT DOUBLE PRECISION (A-H,O-Z)',
+    '      COMMON /RDISCT/ LRDIS,RDISST',
+    '      CALL REAL_CALL',
+    '      END',
+  }
+  eq(sniff.detect(deck), 'fortran', 'a fixed-form deck is recognised as Fortran')
+  eq(sniff.fortran_form(deck), 'fixed', 'and its source form is fixed')
+
+  -- A free-form file must not be mistaken for fixed form just because
+  -- `contains` and `character` begin with a `c`.
+  local free = {
+    'module free_mod', '  implicit none', '  integer :: n = 0', 'contains',
+    '  subroutine bump(k)', '    integer, intent(in) :: k', '    n = n + k',
+    '  end subroutine bump', 'end module free_mod',
+  }
+  eq(sniff.detect(free), 'fortran', 'a free-form module is recognised as Fortran')
+  eq(sniff.fortran_form(free), 'free', 'and its source form is free')
+
+  -- Something that merely looks Fortran-ish must be left alone. `end` closes a
+  -- block in Lua, `function` is a Lua keyword, and `*` opens a Markdown bullet,
+  -- so an early version of these rules scored every Lua file as Fortran.
+  local lua = {
+    'local M = {}', '', 'function M.run(x)', '  if x then return 1 end',
+    '  return 0', 'end', '', 'return M',
+  }
+  eq(sniff.detect(lua), nil, 'a Lua file is not claimed as Fortran')
+  eq(sniff.detect({ '# Title', '', '* one', '* two' }), nil,
+    'a Markdown file is not claimed as Fortran')
+  eq(sniff.detect({ '#ifndef H', '#define H', '#include <stdio.h>', '#endif' }), 'c',
+    'a C header is recognised')
+  eq(sniff.detect({ 'import os', 'def main():', '    pass' }), 'python',
+    'a Python file is recognised')
+  eq(sniff.detect({}), nil, 'an empty file stays unclassified')
+
+  -- Column rules: fixed form hides a comment line and drops the label field,
+  -- free form keeps everything but a trailing `!`.
+  eq(sniff.fortran_code('C     CALL FAKE_CALL', 'fixed'), '',
+    'a column-1 comment leaves no code')
+  eq(sniff.fortran_code('      CALL REAL_CALL', 'fixed'), 'CALL REAL_CALL',
+    'statement text from column 7 onward survives')
+  eq(sniff.fortran_code('c = a + b', 'free'), 'c = a + b',
+    'a free-form assignment named c is preserved')
+  eq(sniff.fortran_code('c = a + b', 'fixed'), '',
+    'the same line is a comment in fixed form')
+  eq(sniff.fortran_code('      X = 1 ! note', 'fixed'), 'X = 1 ',
+    'a trailing comment is still removed in fixed form')
+
+  -- Ambiguous names must be classified from content by the scanner, and the
+  -- extractor must agree about the form - otherwise the editor highlights one
+  -- thing and the analysis reports another.
+  local scan = require('dshstudio.project.scan')
+  eq(scan.lang_for('deck.src', 'deck.src'), 'other',
+    'without content a .src file is not guessed at')
+  eq(scan.lang_for('deck.src', 'deck.src', deck), 'fortran',
+    'with content a .src file is classified')
+  eq(scan.lang_for('shim.inc', 'shim.inc', { '#include <stdio.h>' }), 'c',
+    'a .inc file is classified from its content')
+
+  local symbols = require('dshstudio.project.symbols')
+  local syms = symbols.extract_source(table.concat(deck, '\n'), 'fortran')
+  local names = {}
+  for _, s in ipairs(syms) do names[#names + 1] = s.name end
+  ok(vim.tbl_contains(names, 'sread'), 'the subroutine in the deck is extracted')
+  for _, n in ipairs(names) do
+    ok(n ~= 'Fake_Call' and n ~= 'fake_call',
+      'a commented-out definition is not extracted')
+  end
+end
+
+-- ---------------------------------------------------------------------------
 -- Runner
 -- ---------------------------------------------------------------------------
 
@@ -800,6 +886,7 @@ local ALL = {
   ['session: approval mode'] = test_approval_mode,
   ['session: workspace detection'] = test_workspace_detection,
   ['auth: keys, agent env and credential file'] = test_auth_keys,
+  ['project: legacy .src and fixed-form columns'] = test_sniffing,
 }
 
 ---Names of every registered test, sorted.

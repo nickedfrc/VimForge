@@ -860,6 +860,31 @@ local function test_sniffing()
   end
 end
 
+---The LSP setup path is guarded on `vim.lsp.config` being usable. That guard
+---originally tested `type(...) == 'function'`, which is true on Neovim 0.11 but
+---false on 0.12, where the same value is a callable table. The whole setup path
+---sat behind it, so on 0.12 every language server was skipped and the only
+---symptom was a bogus "needs Neovim 0.11+" notice. This pins the contract: if
+---the API is present in a callable form, the servers must register.
+local function test_lsp_config_registration()
+  local lsp = require('dshstudio.lsp')
+  local config = vim.lsp and vim.lsp.config
+  local mt = type(config) == 'table' and getmetatable(config) or nil
+  local usable = type(config) == 'function'
+    or (mt ~= nil and type(mt.__call) == 'function')
+  ok(usable, 'vim.lsp.config is callable on this Neovim')
+  if not usable then return end
+
+  local configured = lsp.configure()
+  ok(type(configured) == 'table' and #configured > 0,
+    'the language server configs actually register')
+
+  local result = lsp.setup()
+  ok(type(result) == 'table', 'setup returns a result table')
+  ok(#(result.enabled or {}) + #(result.missing or {}) > 0,
+    'setup reaches the point of deciding which servers to start')
+end
+
 -- ---------------------------------------------------------------------------
 -- Runner
 -- ---------------------------------------------------------------------------
@@ -887,6 +912,7 @@ local ALL = {
   ['session: workspace detection'] = test_workspace_detection,
   ['auth: keys, agent env and credential file'] = test_auth_keys,
   ['project: legacy .src and fixed-form columns'] = test_sniffing,
+  ['lsp: server configs register on this Neovim'] = test_lsp_config_registration,
 }
 
 ---Names of every registered test, sorted.

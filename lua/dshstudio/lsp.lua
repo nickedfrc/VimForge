@@ -17,6 +17,23 @@ local M = {}
 
 local uv = vim.uv or vim.loop
 
+---True when a value can be called, whether it is a function or a callable table.
+---
+---`vim.lsp.config` is a plain function in Neovim 0.11 but a table with a
+---`__call` metamethod in 0.12, where the table form also allows
+---`vim.lsp.config['name']` lookups. Testing `type(v) == 'function'` therefore
+---rejects the newer Neovim, and because these guards sit in front of the whole
+---setup path the effect was silent: every language server was skipped and the
+---only symptom was an "needs Neovim 0.11+" notice on a 0.12 build.
+---@param v any
+---@return boolean
+local function callable(v)
+  if type(v) == 'function' then return true end
+  if type(v) ~= 'table' then return false end
+  local mt = getmetatable(v)
+  return mt ~= nil and type(mt.__call) == 'function'
+end
+
 -- Server catalogue -----------------------------------------------------------
 -- One entry per supported server: how to start it, where its project root is,
 -- and how to install it on each OS (used for the one-shot missing-binary hint).
@@ -433,7 +450,7 @@ end
 ---runtime files when they exist).
 ---@return string[] configured server names
 function M.configure()
-  if type(vim.lsp.config) ~= 'function' then
+  if not callable(vim.lsp.config) then
     notify('DSH Studio: Neovim 0.11+ is required for vim.lsp.config()', 'error')
     return {}
   end
@@ -570,7 +587,7 @@ function M.setup()
 
   local result = { enabled = {}, missing = {}, disabled = {} }
 
-  if type(vim.lsp.config) ~= 'function' or type(vim.lsp.enable) ~= 'function' then
+  if not callable(vim.lsp.config) or type(vim.lsp.enable) ~= 'function' then
     notify('DSH Studio: this build needs Neovim 0.11+ (vim.lsp.config / vim.lsp.enable)', 'error')
     return result
   end

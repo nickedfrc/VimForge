@@ -147,6 +147,23 @@ If a `CALL` only ever appears inside a comment in a fixed-form file, the file wa
 read as free form. The source form is detected per file; confirm it with
 `:echo b:dshstudio_fortran_form` and force it as described above.
 
+## "This build needs Neovim 0.11+" on a newer Neovim
+
+This was a real bug up to `0.1.0`, not a version problem. `vim.lsp.config` is a
+plain function in Neovim 0.11 but a callable table in 0.12, and the guard in front
+of the LSP setup tested `type(...) == 'function'`. On 0.12 that was false, so the
+notice appeared and **every language server was skipped** — no completion, no
+diagnostics, no go-to-definition.
+
+It is fixed; the guard now accepts anything callable and `:DshSelfTest` covers it.
+Upgrade to a build after `0.1.0`, or verify from a shell with
+`:lua print(type(vim.lsp.config))`. If you are on an older build and cannot
+upgrade, the workaround is to start the servers yourself:
+
+```vim
+:lua vim.lsp.enable({ 'clangd', 'pyright', 'fortls' })
+```
+
 ## fortls is not found
 
 `pip install fortran-language-server`, or install it through `:Mason` where a

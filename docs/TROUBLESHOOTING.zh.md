@@ -126,6 +126,22 @@ CMake 工程用 `<leader>lb` 编译时已经带上了这个开关。
 如果某个 `CALL` 只出现在固定格式文件的注释里，说明这个文件被当成自由格式读了。
 格式是逐文件判断的，用 `:echo b:dshstudio_fortran_form` 确认，再按上面的办法强制指定。
 
+## 在较新的 Neovim 上提示 "This build needs Neovim 0.11+"
+
+这是 `0.1.0` 及之前版本的一个真实 bug，不是版本问题。
+`vim.lsp.config` 在 Neovim 0.11 里是普通函数，在 0.12 里是**可调用的 table**，
+而 LSP 初始化前面的判断写的是 `type(...) == 'function'`。
+在 0.12 上这个判断为假，于是弹出这条提示，并且**所有语言服务器都被跳过**——
+补全、诊断、跳转定义全部失效。
+
+现已修复：判断改成"只要能调用就算可用"，`:DshSelfTest` 也覆盖了这条。
+升级到 `0.1.0` 之后的版本即可；也可以用 `:lua print(type(vim.lsp.config))` 自行确认。
+如果暂时无法升级，可以手工启动服务器：
+
+```vim
+:lua vim.lsp.enable({ 'clangd', 'pyright', 'fortls' })
+```
+
 ## 找不到 fortls
 
 `pip install fortran-language-server`，或在有配方时用 `:Mason` 安装。

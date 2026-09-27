@@ -219,6 +219,14 @@ failures found by running against Neovim:
 - Never write to a user's file outside the project root without a prompt.
 - Keep user-visible strings in English in the source; the Chinese documentation is
   separate rather than duplicating strings in code.
+- **Feature-detect with `pcall`, not with `type(v) == 'function'`.** Neovim turns
+  some APIs into callable tables between releases: `vim.lsp.config` is a function
+  in 0.11 and a table with `__call` in 0.12. A `type` check against the older
+  shape is false on the newer Neovim, and because these guards sit in front of
+  whole subsystems the failure is silent — every language server was skipped on
+  0.12 behind a guard that only printed a misleading "needs Neovim 0.11+" notice.
+  Call the API inside `pcall` and react to the error, or accept anything callable.
+  `tests/probe.lua` pins this for the LSP path.
 
 ## 7. Adding a language
 
@@ -230,6 +238,12 @@ failures found by running against Neovim:
 4. Add a server entry in `lsp.lua` with its root markers and binary.
 5. Add the parser to `treesitter_ensure` in `config.lua`.
 6. Extend `tests/probe.lua` with an extraction case for the new language.
+
+If the language has ambiguous or uninformative file names, add them to
+`AMBIGUOUS_EXT` in `project/sniff.lua` (or extend `LANG_BY_EXT` when the name is
+unambiguous). Fixed-form or column-sensitive formats belong in `sniff.lua` too,
+so that the editor and the extractor share one definition of where a statement
+starts and what a comment looks like.
 
 ## 8. Changing the DeepSeek integration
 

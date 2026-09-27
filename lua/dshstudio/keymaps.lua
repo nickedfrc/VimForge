@@ -523,6 +523,11 @@ function M.setup()
       { 'dshstudio.core.auth', 'manage' },
     })
   end, 'Manage model providers / API keys')
+  map('n', '<leader>dw', function()
+    try_list({
+      { 'dshstudio.core.session', 'pick_workspace' },
+    })
+  end, 'Choose the agent workspace (project directory)')
   map('n', '<leader>dK', function()
     local ok, auth = pcall(require, 'dshstudio.core.auth')
     if not ok then

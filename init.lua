@@ -192,6 +192,24 @@ setup('dshstudio.lsp', 'setup')
 setup('dshstudio.lang', 'setup')
 setup('dshstudio.keymaps', 'setup')
 
+-- If the editor was started on a directory, treat that as the project to work in.
+-- Launching from a file manager sets the working directory to wherever the
+-- launcher lives (the install folder), so the agent would otherwise be confined
+-- to the wrong tree. A directory argument is an unambiguous statement of intent.
+do
+  local argv0 = vim.fn.argv(0)
+  if argv0 ~= '' and vim.fn.isdirectory(argv0) == 1 then
+    local ok, session = pcall(require, 'dshstudio.core.session')
+    if ok and session and session.detect_workspace_root then
+      local dir = session.detect_workspace_root(vim.fn.fnamemodify(argv0, ':p'))
+      pcall(vim.cmd, 'cd ' .. vim.fn.fnameescape(dir))
+      -- Drop the directory from the argument list so it is not opened as a file.
+      pcall(vim.cmd, 'silent! argdelete ' .. vim.fn.fnameescape(argv0))
+      vim.g.dshstudio_start_dir = dir
+    end
+  end
+end
+
 -- Make the integration discoverable. Every DeepSeek feature sits behind a
 -- <leader> map or a :Dsh* command, and without this a first run shows an empty
 -- buffer with no hint that a panel, a model picker or a project report exist.

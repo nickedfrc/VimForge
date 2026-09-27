@@ -54,6 +54,22 @@ if sidebar then
 end
 
 if session then
+  define('DshWorkspace', function(cmd)
+    if cmd.args ~= '' then
+      session.set_workspace(cmd.args)
+    else
+      session.pick_workspace()
+    end
+  end, { nargs = '?', complete = 'dir', desc = 'Choose the directory the agent works in' })
+
+  define('DshWorkspaceHere', function()
+    -- Use the current file's project root, which is what a user means by "this
+    -- project" when a file is open.
+    local name = vim.api.nvim_buf_get_name(0)
+    local start = name ~= '' and vim.fn.fnamemodify(name, ':p:h') or vim.fn.getcwd()
+    session.set_workspace(session.detect_workspace_root(start))
+  end, { desc = 'Use the current file\'s project as the workspace' })
+
   define('DshNewSession', function()
     if sidebar then sidebar.new_session() else session.close_session(function() end) end
   end, { desc = 'Start a new harness session' })

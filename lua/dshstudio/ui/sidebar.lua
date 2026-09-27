@@ -84,6 +84,14 @@ local function header_lines()
   table.insert(out, title)
   local status = usage_line()
   if status ~= '' then table.insert(out, '  ' .. status) end
+  -- Show the agent's working directory. Launching from a file manager makes the
+  -- install folder the workspace, and without this line there is no way to tell
+  -- which project the agent is actually looking at.
+  if s and s.workspace then
+    local ws = s.workspace()
+    table.insert(out, ('  workspace: %s   (:DshWorkspace to change)'):format(
+      vim.fn.fnamemodify(ws, ':~')))
+  end
   table.insert(out, '')
   if s and not s.is_connected() then
     local st = s.agent_status()

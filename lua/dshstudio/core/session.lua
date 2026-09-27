@@ -370,13 +370,158 @@ function M.agent_status()
   local argv, how = M.resolve_agent_command()
   return {
     found = argv ~= nil,
-    command = argv and table.concat(argv, ' ') or nil,
+    command = argv and table.concat(argv, ', ') or nil,
     discovered_by = how,
     connected = state.connected,
     session_id = state.session_id,
     cwd = state.cwd,
     busy = state.busy,
   }
+end
+
+-- ---------------------------------------------------------------------------
+-- Workspace
+-- ---------------------------------------------------------------------------
+
+---The directory the agent treats as its workspace.
+---
+---This is what the harness confines file tools to and what project analysis
+---scans, so it is the single most important thing to get right. It is captured
+---when the session starts, which means launching the editor from its install
+---folder makes that folder the workspace - useful to nobody.
+---@return string
+function M.workspace()
+  return state.cwd or vim.fn.getcwd()
+end
+
+---Project markers used to decide whether a directory is a project root.
+local WORKSPACE_MARKERS = {
+  '.git', 'CMakeLists.txt', 'Makefile', 'fpm.toml', 'pyproject.toml', 'setup.py',
+  'requirements.txt', 'package.json', 'Cargo.toml', 'meson.build', '.clangd',
+  '.fortls', 'compile_commands.json',
+}
+
+---Walk upward from `start` looking for a project root, falling back to `start`.
+---@param start string
+---@return string
+function M.detect_workspace_root(start)
+  local ok, scan = pcall(require, 'dshstudio.project.scan')
+  if ok and type(scan) == 'table' and scan.detect_root then
+    local found = scan.detect_root(start)
+    if found then return found end
+  end
+  local dir = start
+  for _ = 1, 12 do
+    for _, marker in ipairs(WORKSPACE_MARKERS) do
+      if vim.fn.filereadable(dir .. '/' .. marker) == 1
+        or vim.fn.isdirectory(dir .. '/' .. marker) == 1 then
+        return dir
+      end
+    end
+    local parent = vim.fn.fnamemodify(dir, ':h')
+    if parent == dir or parent == '' then break end
+    dir = parent
+  end
+  return start
+end
+
+---Switch the workspace to `dir` and restart the session so it takes effect.
+---
+---The harness captures the workspace when a session is created, so changing it
+---means closing the current session and opening a new one. Files opened afterwards
+---are unrelated; this only moves the agent's notion of the project.
+---@param dir string
+---@param opts { silent:boolean|nil, on_done:fun(ok:boolean, err:string|nil)|nil }|nil
+function M.set_workspace(dir, opts)
+  opts = opts or {}
+  local on_done = opts.on_done or function() end
+  if type(dir) ~= 'string' or dir == '' then
+    on_done(false, 'no directory given')
+    return
+  end
+  if vim.fn.isdirectory(dir) == 0 then
+    on_done(false, 'not a directory: ' .. dir)
+    return
+  end
+  dir = vim.fn.fnamemodify(dir, ':p'):gsub('/$', '')
+
+  -- Move Neovim there too, so :e, :grep, the file tree and LSP roots agree with
+  -- the agent about which project is open.
+  local prev = vim.fn.getcwd()
+  local moved = pcall(vim.cmd, 'cd ' .. vim.fn.fnameescape(dir))
+  if not moved then
+    on_done(false, 'could not change directory to ' .. dir)
+    return
+  end
+
+  state.cwd = dir
+  -- Restart so the harness picks up the new root.
+  M.close_session(function()
+    M.start_session({ cwd = dir }, function(ok, _sid, err)
+      if not opts.silent then
+        if ok then
+          util().notify(('Workspace: %s'):format(dir), vim.log.levels.INFO)
+        else
+          util().notify(('Workspace set to %s, but the session did not start: %s\n'
+            .. 'The next request will retry. Previous directory: %s'):format(
+            dir, tostring(err), prev), vim.log.levels.WARN)
+        end
+      end
+      M.emit('workspace', dir)
+      on_done(ok, err)
+    end)
+  end)
+end
+
+---Interactive workspace picker.
+---
+---Offers the usual candidates plus a typed path, because a file manager launch
+---gives the editor its own install directory as the working directory and the
+---project is then nowhere in the list.
+function M.pick_workspace()
+  local cwd = vim.fn.getcwd()
+  local current_file = vim.api.nvim_buf_get_name(0)
+  local choices = {}
+  local seen = {}
+
+  local function add(path, label)
+    if type(path) ~= 'string' or path == '' then return end
+    path = vim.fn.fnamemodify(path, ':p'):gsub('/$', '')
+    if seen[path] then return end
+    if vim.fn.isdirectory(path) == 0 then return end
+    seen[path] = true
+    table.insert(choices, { path = path, label = label })
+  end
+
+  add(M.detect_workspace_root(cwd), 'detected project root')
+  add(cwd, 'current directory')
+  if current_file ~= '' then
+    add(vim.fn.fnamemodify(current_file, ':p:h'), 'directory of the current file')
+  end
+  -- Recently opened projects, so switching back does not mean retyping a path.
+  for _, dir in ipairs(M.recent_workspaces or {}) do
+    add(dir, 'recent')
+  end
+  add(vim.fn.expand('~'), 'home')
+
+  local items = {}
+  for _, c in ipairs(choices) do
+    table.insert(items, ('%s  — %s'):format(c.path, c.label))
+  end
+  table.insert(items, 'Type a path…')
+
+  vim.ui.select(items, { prompt = 'Working directory for the agent' }, function(choice)
+    if not choice then return end
+    if choice == 'Type a path…' then
+      vim.ui.input({ prompt = 'Directory: ', default = cwd .. '/', completion = 'dir' }, function(input)
+        if not input or input == '' then return end
+        M.set_workspace(input)
+      end)
+      return
+    end
+    local path = choice:match('^(.-)%s+—%s')
+    if path then M.set_workspace(path) end
+  end)
 end
 
 -- ---------------------------------------------------------------------------

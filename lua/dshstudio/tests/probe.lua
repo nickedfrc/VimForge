@@ -609,6 +609,43 @@ local function test_headless_output_normalisation()
   eq(headless.join_output(42), '42', 'unexpected types degrade to tostring')
 end
 
+---The agent's workspace decides which tree it can read and what project analysis
+---scans, so it must be derivable from both the working directory and a file path.
+local function test_workspace_detection()
+  local session = require('dshstudio.core.session')
+
+  -- A directory holding a project marker must be recognised as the root, and a
+  -- nested directory must resolve upward to it.
+  local base = vim.fn.stdpath('state') .. '/wstest'
+  local inner = base .. '/src/physics'
+  vim.fn.mkdir(inner, 'p')
+  vim.fn.writefile({ '[project]', 'name = "demo"' }, base .. '/fpm.toml')
+
+  -- Compare canonical paths: the scanner may return forward slashes while the
+  -- test built its expectation with the platform separator.
+  local function canon(p) return (vim.fn.fnamemodify(p, ':p'):gsub('\\', '/')):gsub('/+$', '') end
+
+  local from_base = session.detect_workspace_root(base)
+  eq(canon(from_base), canon(base), 'a directory with a marker is its own root')
+
+  local from_inner = session.detect_workspace_root(inner)
+  eq(canon(from_inner), canon(base), 'a nested directory resolves to the project root')
+
+  -- A directory with no markers anywhere must still yield a usable path rather
+  -- than nil, because the workspace is always required.
+  local bare = vim.fn.stdpath('state') .. '/wsbare'
+  vim.fn.mkdir(bare, 'p')
+  local from_bare = session.detect_workspace_root(bare)
+  ok(type(from_bare) == 'string' and from_bare ~= '', 'a markerless directory still yields a path')
+
+  -- workspace() must report the directory the session will use.
+  local ws = session.workspace()
+  ok(type(ws) == 'string' and ws ~= '', 'workspace() reports a path')
+
+  pcall(vim.fn.delete, base, 'rf')
+  pcall(vim.fn.delete, bare, 'rf')
+end
+
 local function test_agent_discovery()
   local session = require('dshstudio.core.session')
   local argv, how = session.resolve_agent_command('acp')
@@ -675,6 +712,7 @@ local ALL = {
   ['headless: system output normalisation'] = test_headless_output_normalisation,
   ['symbols: BOM tolerance and module nesting'] = test_symbols_bom_and_merge,
   ['session: agent discovery'] = test_agent_discovery,
+  ['session: workspace detection'] = test_workspace_detection,
   ['auth: keys, agent env and credential file'] = test_auth_keys,
 }
 

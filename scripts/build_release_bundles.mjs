@@ -74,20 +74,77 @@ const PLATFORMS = [
 // Helpers
 // ---------------------------------------------------------------------------
 
+// `github.com` is occasionally unreachable while `api.github.com` and the asset
+// CDN are not - a routing problem on the way to one IP range, not an outage.
+// Resolve the same file through the API in that case: the asset endpoint
+// redirects to the CDN and serves byte-identical content.
+function apiAssetSpec(url) {
+  const m = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/releases\/download\/([^/]+)\/(.+)$/.exec(String(url));
+  if (!m) return null;
+  return { owner: m[1], repo: m[2], tag: m[3], name: decodeURIComponent(m[4]) };
+}
+
+async function downloadViaApi(url, dest) {
+  const spec = apiAssetSpec(url);
+  if (!spec) return false;
+  const headers = { 'User-Agent': 'vimforge-release-build', Accept: 'application/vnd.github+json' };
+  const rel = await fetch(`https://api.github.com/repos/${spec.owner}/${spec.repo}/releases/tags/${spec.tag}`, { headers });
+  if (!rel.ok) {
+    console.log(`    api: release ${spec.tag} -> HTTP ${rel.status}`);
+    return false;
+  }
+  const data = await rel.json();
+  const assets = data.assets || [];
+  const asset = assets.find((a) => a.name === spec.name);
+  if (!asset) {
+    console.log(`    api: ${spec.name} is not among the ${assets.length} assets of ${spec.tag}`);
+    return false;
+  }
+  const res = await fetch(asset.url, {
+    headers: { 'User-Agent': 'vimforge-release-build', Accept: 'application/octet-stream' },
+    redirect: 'follow',
+  });
+  if (!res.ok) {
+    console.log(`    api: asset ${spec.name} -> HTTP ${res.status}`);
+    return false;
+  }
+  const total = Number(res.headers.get('content-length') || 0);
+  await pipeline(Readable.fromWeb(res.body), createWriteStream(dest));
+  const size = (await stat(dest)).size;
+  console.log(`    downloaded ${path.basename(dest)} via api (${(size / 1048576).toFixed(1)} MB of ${(total / 1048576).toFixed(1)} MB)`);
+  if (total && size !== total) throw new Error(`truncated download: ${size} != ${total}`);
+  return true;
+}
+
 async function download(url, dest, fallback) {
-  const urls = fallback ? [url, fallback] : [url];
-  for (const candidate of urls) {
-    const res = await fetch(candidate, { redirect: 'follow' });
-    if (!res.ok) {
-      console.log(`    ${path.basename(candidate)} -> HTTP ${res.status}`);
-      continue;
+  const candidates = fallback ? [url, fallback] : [url];
+  for (const candidate of candidates) {
+    try {
+      const res = await fetch(candidate, { redirect: 'follow' });
+      if (!res.ok) {
+        console.log(`    ${path.basename(candidate)} -> HTTP ${res.status}`);
+        continue;
+      }
+      const total = Number(res.headers.get('content-length') || 0);
+      await pipeline(Readable.fromWeb(res.body), createWriteStream(dest));
+      const size = (await stat(dest)).size;
+      console.log(`    downloaded ${path.basename(dest)} (${(size / 1048576).toFixed(1)} MB of ${(total / 1048576).toFixed(1)} MB)`);
+      if (total && size !== total) throw new Error(`truncated download: ${size} != ${total}`);
+      return true;
+    } catch (err) {
+      // A connection failure must fall through to the next candidate instead of
+      // aborting the build, and the partial file has to go before retrying.
+      console.log(`    ${path.basename(candidate)} -> ${err.message}`);
+      await rm(dest, { force: true });
     }
-    const total = Number(res.headers.get('content-length') || 0);
-    await pipeline(Readable.fromWeb(res.body), createWriteStream(dest));
-    const size = (await stat(dest)).size;
-    console.log(`    downloaded ${path.basename(dest)} (${(size / 1048576).toFixed(1)} MB of ${(total / 1048576).toFixed(1)} MB)`);
-    if (total && size !== total) throw new Error(`truncated download: ${size} != ${total}`);
-    return true;
+  }
+  for (const candidate of candidates) {
+    try {
+      if (await downloadViaApi(candidate, dest)) return true;
+    } catch (err) {
+      console.log(`    api fallback failed: ${err.message}`);
+      await rm(dest, { force: true });
+    }
   }
   return false;
 }

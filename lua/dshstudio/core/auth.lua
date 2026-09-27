@@ -478,18 +478,48 @@ function M.set_provider_key(provider)
     -- A newly stored key is picked up on the next request, but the model list was
     -- negotiated when the session opened. Restarting the session makes the new
     -- provider's models appear immediately instead of after an editor restart.
+    --
+    -- The restart is a convenience, not part of saving the key: the key is
+    -- already written and effective. The messaging therefore has to keep those
+    -- two facts apart, and a failure has to carry the actual reason - an earlier
+    -- version reported only "session restart failed", which reads as if the whole
+    -- operation had failed and gave nothing to act on.
     vim.ui.select({ 'Yes, refresh the session now', 'No, later' }, {
       prompt = 'Reload the harness session so the new credentials take effect?',
     }, function(choice)
       if choice ~= 'Yes, refresh the session now' then return end
       local ok_session, session = pcall(require, 'dshstudio.core.session')
-      if not ok_session then return end
+      if not ok_session then
+        util().notify('the session module is unavailable, so the session was not restarted.\n'
+          .. 'The key is saved and will be used by the next request.', vim.log.levels.WARN)
+        return
+      end
       session.close_session(function()
         session.start_session({}, function(started, _sid, start_err)
           if started then
-            util().notify('session restarted; the model list is refreshed', vim.log.levels.INFO)
+            util().notify('session restarted; the model list is refreshed',
+              vim.log.levels.INFO)
           else
-            util().notify('session restart failed: ' .. tostring(start_err), vim.log.levels.WARN)
+            local reason = tostring(start_err or 'no reason reported')
+            -- Surface what the agent said on stderr: that is where a missing CLI,
+            -- a credential refusal or a boot failure actually explains itself.
+            local detail = ''
+            if session.agent_status then
+              local status = session.agent_status()
+              if not status.found then
+                detail = ('\n  The harness CLI could not be found (%s). Install it with:\n'
+                  .. '      npm install -g @deepseek-ai/dsh'):format(tostring(status.discovered_by))
+              elseif status.command then
+                detail = ('\n  CLI: %s'):format(status.command)
+              end
+            end
+            util().notify(
+              ('The session could not be restarted: %s\n'
+                .. 'Your API key is saved and will be used by the next request;'
+                .. ' only the refreshed model list needs the restart.%s\n'
+                .. 'To retry: :DshAuth, or :DshCheck to see which layer is failing.'):format(
+                reason, detail),
+              vim.log.levels.WARN, { title = 'DSH Studio: key saved, restart failed' })
           end
           local ok_sidebar, sidebar = pcall(require, 'dshstudio.ui.sidebar')
           if ok_sidebar and sidebar.schedule_render then sidebar.schedule_render() end

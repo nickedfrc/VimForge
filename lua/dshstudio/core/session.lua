@@ -218,33 +218,64 @@ end
 -- Agent discovery
 -- ---------------------------------------------------------------------------
 
----Locate the `dsh` CLI as an argv prefix.
----Order: explicit config -> DSHSTUDIO_DSH_BIN -> PATH `dsh` ->
----       `node <known npx checkout> .../dsh/lib/bin.js` -> npx fallback.
----@return string[]|nil argv
----@return string|nil how  human readable discovery note
-function M.resolve_agent_command()
-  local cfg = config().get and config().get('agent_command') or nil
-  if type(cfg) == 'table' and #cfg > 0 then
-    return cfg, 'config'
-  elseif type(cfg) == 'string' and cfg ~= '' then
-    return { cfg }, 'config'
+---Make an argv prefix directly spawnable.
+---
+---Two Windows-specific problems are handled here, both of which made the agent
+---fail to start:
+---   * `jobstart` cannot execute a `.cmd`/`.bat` shim; it exits with
+---     "E903: Process failed to start". Such a command has to go through
+---     `cmd.exe /c`.
+---   * a bare `dsh` on PATH resolves to `dsh.CMD`, so the shim is replaced with
+---     the real entry point run through `node` whenever one can be found.
+---@param argv string[]
+---@return string[] argv
+---@return string|nil how  set when the command was adapted
+function M.normalize_agent_command(argv)
+  if type(argv) ~= 'table' or #argv == 0 then return argv, nil end
+
+  if not util().is_windows() then return argv, nil end
+
+  local head = argv[1]
+  local note = nil
+
+  -- A `dsh` found on PATH is the npm shim; prefer the script it wraps.
+  if head:lower() == 'dsh' or head:lower() == 'dsh.cmd' or head:lower() == 'dsh.bat' then
+    if vim.fn.executable('dsh') == 1 then
+      local resolved = vim.fn.exepath('dsh')
+      if resolved and resolved ~= '' then
+        head = resolved
+        note = 'resolved the dsh shim to ' .. resolved
+      end
+    end
   end
 
-  if vim.fn.executable('dsh') == 1 then
-    return { 'dsh' }, 'PATH'
+  -- Route a .cmd/.bat shim through cmd.exe.
+  if head:lower():match('%.cmd$') or head:lower():match('%.bat$') then
+    local rest = {}
+    for i = 2, #argv do rest[#rest + 1] = argv[i] end
+    local out = { 'cmd.exe', '/c', head }
+    vim.list_extend(out, rest)
+    return out, (note and (note .. '; ') or '') .. 'routed the .cmd shim through cmd.exe'
   end
 
-  local env_bin = os.getenv('DSHSTUDIO_DSH_BIN')
-  if env_bin and env_bin ~= '' then
-    return { env_bin }, 'DSHSTUDIO_DSH_BIN'
+  if head ~= argv[1] then
+    local out = { head }
+    for i = 2, #argv do out[#out + 1] = argv[i] end
+    return out, note
   end
+  return argv, nil
+end
 
-  -- A DSH npx checkout: <cache>/_npx/*/node_modules/@deepseek-ai/dsh/lib/bin.js
+---Find the harness CLI's JavaScript entry point inside an npx checkout.
+---
+---Running `node <entry>` avoids the Windows `.cmd` shim entirely, so this is
+---preferred over a PATH lookup when both exist.
+---@return string|nil entry
+function M.find_npx_entry()
   local home = os.getenv('HOME') or os.getenv('USERPROFILE')
   local candidates = {}
+  local sep = util().is_windows() and '\\' or '/'
   if home then
-    local sep = util().is_windows() and '\\' or '/'
     table.insert(candidates, home .. sep .. 'AppData' .. sep .. 'Local' .. sep .. 'npm-cache' .. sep .. '_npx')
     table.insert(candidates, home .. '/.npm/_npx')
     table.insert(candidates, home .. '/AppData/Local/npm-cache/_npx')
@@ -257,15 +288,79 @@ function M.resolve_agent_command()
     if ok and type(entries) == 'table' then
       for _, dir in ipairs(entries) do
         local bin = base .. '/' .. dir .. '/node_modules/@deepseek-ai/dsh/lib/bin.js'
-        if vim.fn.filereadable(bin) == 1 then
-          return { vim.fn.exepath('node') ~= '' and vim.fn.exepath('node') or 'node', bin }, 'npx cache'
-        end
+        if vim.fn.filereadable(bin) == 1 then return bin end
       end
     end
   end
+  return nil
+end
+
+---Locate the `dsh` CLI as an argv prefix.
+---Order: explicit config -> DSHSTUDIO_DSH_BIN -> the npx checkout's entry script
+---(most reliable on Windows) -> PATH `dsh` -> npx fallback.
+---The result always goes through `normalize_agent_command`.
+---
+---`profile` is appended when given. The CLI requires it: launching without one
+---exits immediately with "error: --profile <name> is required", which is what the
+---interactive session and the one-shot path both need (`acp` and `headless`).
+---@param profile string|nil  e.g. 'acp'
+---@return string[]|nil argv
+---@return string|nil how  human readable discovery note
+function M.resolve_agent_command(profile)
+  ---Append the profile flag to a resolved argv, unless the caller already set one.
+  ---@param argv string[]
+  ---@param note string|nil
+  ---@return string[] argv
+  ---@return string note
+  local function with_profile(argv, note)
+    local base = argv
+    local suffix = note or ''
+    if profile and profile ~= '' then
+      local has_profile = false
+      for _, part in ipairs(base) do
+        if part == '--profile' then has_profile = true end
+      end
+      if not has_profile then
+        base = vim.list_extend({}, base)
+        table.insert(base, '--profile')
+        table.insert(base, profile)
+      end
+      suffix = (suffix ~= '' and (suffix .. ', ') or '') .. 'profile=' .. profile
+    end
+    return base, suffix
+  end
+
+  local cfg = config().get and config().get('agent_command') or nil
+  if type(cfg) == 'table' and #cfg > 0 then
+    local argv, note = M.normalize_agent_command(cfg)
+    return with_profile(argv, 'config' .. (note and (' (' .. note .. ')') or ''))
+  elseif type(cfg) == 'string' and cfg ~= '' then
+    local argv, note = M.normalize_agent_command({ cfg })
+    return with_profile(argv, 'config' .. (note and (' (' .. note .. ')') or ''))
+  end
+
+  local env_bin = os.getenv('DSHSTUDIO_DSH_BIN')
+  if env_bin and env_bin ~= '' then
+    local argv, note = M.normalize_agent_command({ env_bin })
+    return with_profile(argv, 'DSHSTUDIO_DSH_BIN' .. (note and (' (' .. note .. ')') or ''))
+  end
+
+  -- Preferred: the real entry script, run by node. Immune to the .cmd problem.
+  local entry = M.find_npx_entry()
+  if entry then
+    local node = vim.fn.exepath('node')
+    if node == '' then node = 'node' end
+    return with_profile({ node, entry }, 'npx cache entry')
+  end
+
+  if vim.fn.executable('dsh') == 1 then
+    local argv, note = M.normalize_agent_command({ 'dsh' })
+    return with_profile(argv, 'PATH' .. (note and (' (' .. note .. ')') or ''))
+  end
 
   if vim.fn.executable('npx') == 1 then
-    return { 'npx', '-y', '@deepseek-ai/dsh' }, 'npx'
+    local argv, note = M.normalize_agent_command({ 'npx', '-y', '@deepseek-ai/dsh' })
+    return with_profile(argv, 'npx' .. (note and (' (' .. note .. ')') or ''))
   end
   return nil, 'not found'
 end
@@ -289,7 +384,9 @@ end
 -- ---------------------------------------------------------------------------
 
 local function make_client()
-  local argv = M.resolve_agent_command()
+  -- 'acp' is the profile this client speaks; the CLI requires it and exits with
+  -- "error: --profile <name> is required" without it.
+  local argv = M.resolve_agent_command('acp')
   if not argv then
     return nil, 'Could not find the DeepSeek Harness CLI (`dsh`). Install it with '
       .. '`npm i -g @deepseek-ai/dsh`, or set `agent_command` in your DSH Studio config.'

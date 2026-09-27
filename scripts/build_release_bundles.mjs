@@ -379,67 +379,162 @@ async function buildBundle(platform, stageRoot) {
   // run, and `XDG_CONFIG_HOME` points at `config/`. Nothing is written to the
   // user's home directory.
   const shLauncher = `#!/usr/bin/env bash
-# VimForge portable launcher. Self-contained: uses the Neovim and the
-# configuration inside this folder, and writes nothing outside it.
+# VimForge portable launcher (terminal editor).
+#
+# Self-contained: uses the Neovim and the configuration inside this folder and
+# writes nothing outside it. Shared setup lives in scripts/setup-env.sh so this
+# launcher and the GUI one cannot drift apart.
 set -euo pipefail
-HERE="$(cd "$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
 
-# Resolve this machine's Neovim build.
-NVIM_BIN=""
-if [ -x "$HERE/nvim/bin/nvim" ]; then
-  NVIM_BIN="$HERE/nvim/bin/nvim"
-else
-  case "$(uname -m)" in
-    aarch64|arm64) CAND="$HERE/nvim/arm64/bin/nvim" ;;
-    *)             CAND="$HERE/nvim/x86_64/bin/nvim" ;;
+# Resolve this script's directory without external tools, so a symlink placed on
+# PATH still finds the bundle.
+_self="\${BASH_SOURCE[0]}"
+while [ -L "$_self" ]; do
+  _target="$(readlink "$_self")"
+  case "$_target" in
+    /*) _self="$_target" ;;
+    *)  _self="$(dirname "$_self")/$_target" ;;
   esac
-  if [ -x "$CAND" ]; then
-    NVIM_BIN="$CAND"
-  elif command -v nvim >/dev/null 2>&1; then
-    echo "note: this bundle has no Neovim for $(uname -m); using $(command -v nvim)" >&2
-    NVIM_BIN="$(command -v nvim)"
-  else
-    echo "No Neovim available: the bundle has none for $(uname -m) and none is on PATH." >&2
-    exit 1
-  fi
+done
+HERE="$(cd "$(dirname "$_self")" && pwd)"
+
+if [ -r "$HERE/scripts/setup-env.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$HERE/scripts/setup-env.sh"
+else
+  echo "VimForge: scripts/setup-env.sh is missing; the bundle is incomplete." >&2
+  exit 1
 fi
 
-# Make the configuration the app config directory, without touching ~/.config.
-export DSHSTUDIO_ROOT="$HERE"
-export XDG_CONFIG_HOME="$HERE/config"
-mkdir -p "$XDG_CONFIG_HOME/dshstudio"
-if [ ! -f "$XDG_CONFIG_HOME/dshstudio/init.lua" ]; then
-  cp -R "$HERE/nvim-deepseek-studio/." "$XDG_CONFIG_HOME/dshstudio/"
-fi
-# Keep plugin and state data inside the bundle too, so uninstalling is a delete.
-export XDG_DATA_HOME="\${XDG_DATA_HOME:-$HERE/data}"
-mkdir -p "$XDG_DATA_HOME"
-export NVIM_APPNAME=dshstudio
-
-exec "$NVIM_BIN" "\$@"
+exec "$VIMFORGE_NVIM" "\$@"
 `;
   await writeFile(path.join(dir, 'vimforge'), shLauncher, { mode: 0o755 });
+
+  // Shared setup, sourced by both Unix launchers. In a separate file so the two
+  // entry points behave identically; the Windows .cmd files do the same work
+  // inline because batch has no include mechanism.
+  const setupEnv = `#!/usr/bin/env bash
+# VimForge shared setup. Sourced by ./vimforge and ./vimforge-gui.
+#
+# Creates an isolated configuration and data directory inside the bundle and
+# exports VIMFORGE_NVIM, the editor binary to run. Nothing is written outside the
+# bundle, so an existing Neovim setup is untouched and uninstalling is a delete.
+#
+# This file is sourced, never executed, so it must not kill the caller's shell:
+# failures report and return non-zero.
+
+if [ -z "\${HERE:-}" ]; then
+  echo "VimForge: setup-env.sh was sourced without HERE set." >&2
+  return 1 2>/dev/null || exit 1
+fi
+
+# --- pick this machine's Neovim build ---------------------------------------
+VIMFORGE_NVIM=""
+if [ -x "$HERE/nvim/bin/nvim" ]; then
+  VIMFORGE_NVIM="$HERE/nvim/bin/nvim"
+else
+  case "$(uname -m 2>/dev/null || echo unknown)" in
+    aarch64|arm64) _vf_cand="$HERE/nvim/arm64/bin/nvim" ;;
+    *)             _vf_cand="$HERE/nvim/x86_64/bin/nvim" ;;
+  esac
+  if [ -x "$_vf_cand" ]; then
+    VIMFORGE_NVIM="$_vf_cand"
+  elif command -v nvim >/dev/null 2>&1; then
+    # No bundled build for this architecture; say so, because the bundled runtime
+    # is what the documented version requirement covers.
+    VIMFORGE_NVIM="$(command -v nvim)"
+    echo "VimForge: no bundled Neovim for $(uname -m); using $VIMFORGE_NVIM" >&2
+  else
+    echo "VimForge: no Neovim found." >&2
+    echo "  This bundle has no build for $(uname -m 2>/dev/null || echo 'this architecture')," >&2
+    echo "  and none is on PATH. Install Neovim 0.11+ and run this launcher again." >&2
+    return 1 2>/dev/null || exit 1
+  fi
+fi
+export VIMFORGE_NVIM
+
+# --- isolated config and data -----------------------------------------------
+export DSHSTUDIO_ROOT="$HERE"
+export XDG_CONFIG_HOME="$HERE/config"
+export XDG_DATA_HOME="\${XDG_DATA_HOME:-$HERE/data}"
+export XDG_STATE_HOME="\${XDG_STATE_HOME:-$HERE/state}"
+export NVIM_APPNAME=dshstudio
+
+# Neovim reads only the config directory named after NVIM_APPNAME, while the
+# repository ships it as nvim-deepseek-studio, so seed it on first run.
+_vf_cfg="$XDG_CONFIG_HOME/dshstudio"
+if [ ! -f "$_vf_cfg/init.lua" ]; then
+  mkdir -p "$_vf_cfg" 2>/dev/null || true
+  cp -R "$HERE/nvim-deepseek-studio/." "$_vf_cfg/" 2>/dev/null || true
+fi
+if [ ! -f "$_vf_cfg/init.lua" ]; then
+  echo "VimForge: could not create the configuration directory at $_vf_cfg" >&2
+  echo "  The folder may be read-only or the bundle incomplete; check that" >&2
+  echo "  nvim-deepseek-studio/ exists beside this launcher." >&2
+  return 1 2>/dev/null || exit 1
+fi
+
+mkdir -p "$XDG_DATA_HOME" "$XDG_STATE_HOME" 2>/dev/null || true
+
+# Keep the bundled editor first on PATH: Neovide looks up "nvim" itself.
+_vf_bindir="$(dirname "$VIMFORGE_NVIM")"
+case ":$PATH:" in
+  *":$_vf_bindir:"*) ;;
+  *) PATH="$_vf_bindir:$PATH"; export PATH ;;
+esac
+
+# Verify the binary runs, so a wrong architecture or a missing library produces a
+# clear message instead of a bare exec error.
+if ! "$VIMFORGE_NVIM" --version >/dev/null 2>&1; then
+  echo "VimForge: the bundled Neovim at $VIMFORGE_NVIM does not run." >&2
+  echo "  On Linux check the architecture (uname -m) and that libc is present." >&2
+  echo "  On macOS Gatekeeper may be blocking a downloaded binary:" >&2
+  echo "      xattr -dr com.apple.quarantine \"$HERE\"" >&2
+  return 1 2>/dev/null || exit 1
+fi
+`;
+  await writeFile(path.join(dir, 'scripts', 'setup-env.sh'), setupEnv, { mode: 0o644 });
 
   const shGui = `#!/usr/bin/env bash
 # VimForge desktop window (Neovide). Falls back to the terminal editor when
 # Neovide is not present in this bundle.
 set -euo pipefail
-HERE="$(cd "$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
-export DSHSTUDIO_ROOT="$HERE"
-export XDG_CONFIG_HOME="$HERE/config"
-mkdir -p "$XDG_CONFIG_HOME/dshstudio"
-if [ ! -f "$XDG_CONFIG_HOME/dshstudio/init.lua" ]; then
-  cp -R "$HERE/nvim-deepseek-studio/." "$XDG_CONFIG_HOME/dshstudio/"
-fi
-export XDG_DATA_HOME="\${XDG_DATA_HOME:-$HERE/data}"
-mkdir -p "$XDG_DATA_HOME"
-export NVIM_APPNAME=dshstudio
 
-for candidate in "$HERE/nvim/neovide" "$HERE/neovide" "/Applications/Neovide.app/Contents/MacOS/neovide"; do
-  if [ -x "$candidate" ]; then exec "$candidate" "\$@"; fi
+_self="\${BASH_SOURCE[0]}"
+while [ -L "$_self" ]; do
+  _target="$(readlink "$_self")"
+  case "$_target" in
+    /*) _self="$_target" ;;
+    *)  _self="$(dirname "$_self")/$_target" ;;
+  esac
 done
-if command -v neovide >/dev/null 2>&1; then exec neovide "\$@"; fi
-echo "Neovide is not installed; starting the terminal editor instead." >&2
+HERE="$(cd "$(dirname "$_self")" && pwd)"
+
+if [ -r "$HERE/scripts/setup-env.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$HERE/scripts/setup-env.sh"
+else
+  echo "VimForge: scripts/setup-env.sh is missing; the bundle is incomplete." >&2
+  exit 1
+fi
+
+# Neovide resolves Neovim through PATH and also accepts an explicit path; without
+# one of the two it fails with "program not found".
+for candidate in \
+  "$HERE/neovide/neovide" \
+  "$HERE/neovide" \
+  "$HERE/nvim/neovide" \
+  "/Applications/Neovide.app/Contents/MacOS/neovide"
+do
+  if [ -x "$candidate" ]; then
+    exec "$candidate" --neovim-bin "$VIMFORGE_NVIM" "\$@"
+  fi
+done
+if command -v neovide >/dev/null 2>&1; then
+  exec neovide --neovim-bin "$VIMFORGE_NVIM" "\$@"
+fi
+
+echo "VimForge: Neovide is not installed; starting the terminal editor instead." >&2
 exec "$HERE/vimforge" "\$@"
 `;
   await writeFile(path.join(dir, 'vimforge-gui'), shGui, { mode: 0o755 });
@@ -560,19 +655,41 @@ if (Test-Path $neovide) {
 `;
   await writeFile(path.join(dir, 'vimforge-gui.ps1'), ps1Gui);
 
-  // A double-clickable GUI launcher, since that is how most Windows users start.
+  // Double-clickable GUI launcher. Written to avoid depending on `powershell`
+  // being on PATH, which is not guaranteed: a trimmed or customised PATH makes
+  // the command unresolvable and the window flashes shut with
+  // "'powershell' is not recognized as an internal or external command".
+  // The neovim and neovide executables are therefore invoked directly, and
+  // PowerShell is only needed for the optional install step, where it is located
+  // by absolute path first.
   await writeFile(path.join(dir, 'VimForge.cmd'), `@echo off
-rem Double-click to open the VimForge desktop window.
+rem Double-click to open the VimForge desktop window. ASCII only: cmd.exe reads
+rem batch files in the OEM code page.
 setlocal
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0vimforge-gui.ps1" %*
-if errorlevel 1 pause
+set "HERE=%~dp0"
+set "HERE=%HERE:~0,-1%"
+set "PATH=%HERE%\\nvim\\bin;%PATH%"
+set "DSHSTUDIO_ROOT=%HERE%"
+set "XDG_CONFIG_HOME=%HERE%\\config"
+set "XDG_DATA_HOME=%HERE%\\data"
+set "NVIM_APPNAME=dshstudio"
+if not exist "%HERE%\\config\\dshstudio\\init.lua" (
+  mkdir "%HERE%\\config\\dshstudio" 2>nul
+  xcopy /E /I /Y /Q "%HERE%\\nvim-deepseek-studio" "%HERE%\\config\\dshstudio" >nul 2>&1
+)
+if exist "%HERE%\\neovide\\neovide.exe" (
+  "%HERE%\\neovide\\neovide.exe" --neovim-bin "%HERE%\\nvim\\bin\\nvim.exe" %*
+) else (
+  echo Neovide is not in this folder; starting the terminal editor instead.
+  "%HERE%\\nvim\\bin\\nvim.exe" %*
+)
 `);
 
   await writeFile(path.join(dir, 'install.ps1'), `<#
 VimForge ${VERSION} portable install (Windows x64).
 
-This bundle is already complete. This script warms the plugin cache and reports
-how to start the editor; a desktop shortcut is created for convenience.
+This bundle is already complete. This script warms the plugin cache, creates a
+desktop shortcut, and reports how to start the editor.
 #>
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -599,7 +716,7 @@ Write-Host ''
 Write-Host 'VimForge is ready.'
 Write-Host ''
 Write-Host ('  double-click   ' + (Join-Path $here 'VimForge.cmd') + '   (desktop window)')
-Write-Host ('  terminal       powershell -File "' + (Join-Path $here 'vimforge.ps1') + '"')
+Write-Host ('  terminal       ' + (Join-Path $here 'start-vimforge-terminal.cmd'))
 Write-Host ''
 Write-Host 'Configuration and plugin data stay inside this folder; your existing'
 Write-Host 'Neovim setup was not touched.'
@@ -609,10 +726,25 @@ Write-Host '  npm install -g @deepseek-ai/dsh'
 Write-Host 'then :DshAuth to set an API key and <leader>dm to pick a model.'
 `);
 
+  // The install launcher locates PowerShell by absolute path before falling back
+  // to PATH, so a trimmed PATH does not break the first run.
   await writeFile(path.join(dir, 'install.cmd'), `@echo off
 rem VimForge ${VERSION} portable install (Windows x64). Double-click me.
 setlocal
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"
+set "PS="
+if exist "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" set "PS=%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+if not defined PS if exist "%ProgramFiles%\\PowerShell\\7\\pwsh.exe" set "PS=%ProgramFiles%\\PowerShell\\7\\pwsh.exe"
+if not defined PS for %%I in (pwsh.exe powershell.exe) do if not defined PS if not "%%~$PATH:I"=="" set "PS=%%~$PATH:I"
+if not defined PS (
+  echo.
+  echo PowerShell was not found on this system, so the optional setup step cannot run.
+  echo VimForge itself needs no setup: start it with VimForge.cmd in this folder.
+  echo.
+  echo Press any key to close.
+  pause >nul
+  exit /b 1
+)
+"%PS%" -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"
 pause
 `);
 

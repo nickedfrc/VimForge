@@ -122,9 +122,12 @@ function Client:start(on_exit)
   local spawn_opts = {
     cwd = self.opts.cwd,
     env = self.opts.env,
-    stdin = true,
-    stdout = true,
-    stderr = true,
+    -- No `stdin`/`stdout`/`stderr` keys here. Neovim expects a file descriptor or
+    -- a buffer for those, and passing `true` is rejected with
+    -- "E475: Invalid value for argument stdin: v:true", which made every agent
+    -- spawn fail. Supplying `on_stdout`/`on_stderr` connects those pipes, and
+    -- stdin is a pipe by default, which is what the newline-delimited ACP
+    -- transport needs.
     text = false,
     on_stderr = function(_, data)
       if data then self:on_stderr_bytes(table.concat(data, '\n')) end

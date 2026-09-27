@@ -52,28 +52,22 @@ local function session_module()
 end
 
 ---Resolve the launcher argv for a profile.
----Reuses the session module's discovery so interactive and batch paths agree.
+---Reuses the session module's discovery so interactive and batch paths agree on
+---both the CLI location and the profile flag.
 ---@param profile string
 ---@return string[]|nil argv
 ---@return string how
 function M.resolve_argv(profile)
   local s = session_module()
-  local base, how
   if s and s.resolve_agent_command then
-    base, how = s.resolve_agent_command()
+    -- resolve_agent_command appends `--profile <name>` itself, which the CLI
+    -- requires; adding it here as well would duplicate the flag.
+    return s.resolve_agent_command(profile)
   end
-  if not base then
-    if vim.fn.executable('dsh') == 1 then
-      base, how = { 'dsh' }, 'PATH'
-    else
-      base, how = nil, 'not found'
-    end
+  if vim.fn.executable('dsh') == 1 then
+    return { 'dsh', '--profile', profile }, 'PATH'
   end
-  if not base then return nil, how end
-  local argv = vim.list_extend({}, base)
-  table.insert(argv, '--profile')
-  table.insert(argv, profile)
-  return argv, how
+  return nil, 'not found'
 end
 
 ---Count bytes in a UTF-8 string.

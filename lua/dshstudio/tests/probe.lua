@@ -611,11 +611,45 @@ end
 
 local function test_agent_discovery()
   local session = require('dshstudio.core.session')
-  local argv, how = session.resolve_agent_command()
+  local argv, how = session.resolve_agent_command('acp')
   -- Discovery must either find a command or explain itself; it must not throw.
   ok(type(how) == 'string', 'discovery reports how it resolved')
   if argv then
     ok(type(argv) == 'table' and #argv > 0, 'argv is a non-empty table')
+
+    -- The CLI exits immediately without a profile, so the resolved argv must
+    -- carry one. This is a regression guard: launching without it produced
+    -- "error: --profile <name> is required" and an agent that exited at once.
+    local profile_at = nil
+    for i, part in ipairs(argv) do
+      if part == '--profile' then profile_at = i end
+    end
+    ok(profile_at ~= nil, 'argv contains --profile')
+    if profile_at then
+      eq(argv[profile_at + 1], 'acp', 'the profile is the requested one')
+      local _, count = table.concat(argv, ' '):gsub('%-%-profile', '')
+      eq(count, 1, 'the profile flag appears exactly once')
+    end
+
+    -- A Windows .cmd shim cannot be executed directly by jobstart; it has to go
+    -- through cmd.exe. (Only meaningful on Windows, where the shim exists.)
+    if package.config:sub(1, 1) == '\\' then
+      local head = argv[1]:lower()
+      if head:match('%.cmd$') or head:match('%.bat$') then
+        eq(argv[1]:lower(), 'cmd.exe', 'a .cmd shim is routed through cmd.exe')
+      end
+    end
+  end
+
+  -- The headless path must ask for its own profile, exactly once.
+  local headless = require('dshstudio.core.headless')
+  local hargv = headless.resolve_argv('headless')
+  if hargv then
+    local text = table.concat(hargv, ' ')
+    ok(text:find('%-%-profile', 1) ~= nil, 'headless argv carries a profile')
+    local _, hcount = text:gsub('%-%-profile', '')
+    eq(hcount, 1, 'headless profile flag appears exactly once')
+    ok(text:find('headless', 1, true) ~= nil, 'headless profile is named')
   end
 end
 

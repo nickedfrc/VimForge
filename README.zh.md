@@ -1,4 +1,4 @@
-# VimForge · DSH Studio 中文说明
+﻿# VimForge · DSH Studio 中文说明
 
 **一个真正能用的 Vim 编辑器 —— 内置 DeepSeek Harness。**
 
@@ -13,9 +13,10 @@
 
 | 文档 | 内容 |
 |---|---|
-| [README.md](README.md) | 英文主文档（安装、配置、功能全表） |
-| [docs/ACP.md](docs/ACP.md) | 与 DeepSeek Harness 通信的 ACP 协议契约（实测确认） |
+| [README.md](README.md) | 英文主文档（功能全表） |
+| [docs/INSTALL.zh.md](docs/INSTALL.zh.md) | **三平台安装说明**：Windows x64 / macOS（Intel 与 Apple 芯片）/ Linux x86_64 |
 | [docs/TROUBLESHOOTING.zh.md](docs/TROUBLESHOOTING.zh.md) | **中文排障手册**：按发生频率排序的故障与修复 |
+| [docs/ACP.md](docs/ACP.md) | 与 DeepSeek Harness 通信的 ACP 协议契约（实测确认） |
 | [docs/DEVELOPING.md](docs/DEVELOPING.md) | 架构、加载顺序、并发规则、测试方法 |
 | [docs/MIGRATING.md](docs/MIGRATING.md) | 从你自己的 vim 配置迁移过来 |
 | [CREDITS.md](CREDITS.md) | 依赖、许可证、商标说明 |
@@ -102,13 +103,22 @@
 
 ## 支持平台
 
-| 平台 | 终端 | 独立窗口 |
-|---|---|---|
-| Windows 10/11 x64 | `dshstudio` | `dshstudio-gui`（Neovide）+ 桌面快捷方式 |
-| macOS 11+（Intel / Apple 芯片） | `dshstudio` | `dshstudio-gui` + `DSH Studio.app` |
-| Linux x86_64 | `dshstudio` | `dshstudio-gui`，可选打包成 AppImage |
+三种系统架构都支持，细节见 [docs/INSTALL.zh.md](docs/INSTALL.zh.md)。
 
-Windows ARM64 可用 x64 版本（系统会转译运行）。
+| | Windows 10/11 **x64** | **macOS** 11+（Intel 与 Apple 芯片） | **Linux x86_64** |
+|---|---|---|---|
+| 终端编辑器 | `dshstudio` | `dshstudio` | `dshstudio` |
+| 独立窗口 | `dshstudio-gui`（Neovide）+ 桌面快捷方式 | `dshstudio-gui` + `DSH Studio.app` | `dshstudio-gui` + 桌面项，可选 AppImage |
+| 使用的 Neovim 构建 | `nvim-win64.zip` | `nvim-macos-arm64` / `nvim-macos-x86_64` | `nvim-linux-x86_64` |
+| 安装脚本 | `install-windows.ps1`（PowerShell 5.1+） | `install-unix.sh`（bash） | `install-unix.sh`（bash） |
+| 文件关联 | 注册"用 DSH Studio 打开" | 应用包内声明文档类型 | 桌面项 `MimeType=` |
+| 额外要求 | 建议用 Windows Terminal | 图标字形需 Nerd Font | Neovide AppImage 需要 FUSE |
+
+Windows ARM64 用 x64 版本（系统转译运行）。Linux ARM64 上游没有官方 Neovim 包，
+设置 `DSHSTUDIO_USE_SYSTEM_NVIM=1` 并使用发行版的 Neovim 0.11+。
+
+各平台的语言服务器、编译器与包管理器命令不同，对照表见
+[docs/INSTALL.zh.md](docs/INSTALL.zh.md) 第 4 节。
 
 ## 依赖
 
@@ -123,8 +133,8 @@ Windows ARM64 可用 x64 版本（系统会转译运行）。
 ### Windows x64
 
 ```powershell
-git clone https://github.com/<你的用户名>/dsh-studio.git
-cd dsh-studio
+git clone https://github.com/nickedfrc/VimForge.git
+cd VimForge
 powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
 ```
 
@@ -136,8 +146,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
 ### macOS / Linux
 
 ```bash
-git clone https://github.com/<你的用户名>/dsh-studio.git
-cd dsh-studio
+git clone https://github.com/nickedfrc/VimForge.git
+cd VimForge
 ./scripts/install-unix.sh
 ```
 

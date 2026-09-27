@@ -1,4 +1,4 @@
-<div align="center">
+﻿<div align="center">
 
 # VimForge
 
@@ -24,12 +24,13 @@ endorsed by the Neovim, Vim, Neovide or DeepSeek projects. See [CREDITS.md](CRED
 
 | Document | What it covers |
 |---|---|
+| [docs/INSTALL.md](docs/INSTALL.md) | **Windows / macOS / Linux**: installers, manual install, per-platform dependencies, verification, uninstall |
 | [docs/ACP.md](docs/ACP.md) | The verified ACP wire contract used to talk to DeepSeek Harness |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Every failure mode we have hit, and its fix |
 | [docs/DEVELOPING.md](docs/DEVELOPING.md) | Architecture, load order, concurrency rules, testing |
 | [docs/MIGRATING.md](docs/MIGRATING.md) | Porting your own vimrc/keymaps here |
 | [CREDITS.md](CREDITS.md) | Dependencies, licences, trademark notes |
-| [README.zh.md](README.zh.md) | 中文说明 |
+| [README.zh.md](README.zh.md) | 中文说明 · [中文安装](docs/INSTALL.zh.md) · [中文排障](docs/TROUBLESHOOTING.zh.md) |
 
 ---
 
@@ -127,15 +128,23 @@ files, and the AI notes.
 
 ## Supported platforms
 
-| Platform | Terminal | Desktop window |
-|---|---|---|
-| Windows 10/11 x64 | :white_check_mark: `dshstudio` | :white_check_mark: `dshstudio-gui` (Neovide) |
-| macOS 11+ (Intel / Apple Silicon) | :white_check_mark: `dshstudio` | :white_check_mark: `dshstudio-gui` + `DSH Studio.app` |
-| Linux x86_64 | :white_check_mark: `dshstudio` | :white_check_mark: `dshstudio-gui`, optional AppImage |
+Three platforms, three architectures. Full detail in [docs/INSTALL.md](docs/INSTALL.md).
 
-Windows ARM64 runs the x64 build under emulation. Linux on ARM has no prebuilt
-Neovim asset from upstream — use your distribution's packages and point the
-launcher at them.
+| | Windows 10/11 **x64** | **macOS** 11+ (Intel & Apple Silicon) | **Linux x86_64** |
+|---|---|---|---|
+| Terminal editor | `dshstudio` | `dshstudio` | `dshstudio` |
+| Desktop window | `dshstudio-gui` (Neovide) + desktop shortcut | `dshstudio-gui` + `DSH Studio.app` | `dshstudio-gui` + `.desktop` entry, optional AppImage |
+| Neovim build used | `nvim-win64.zip` | `nvim-macos-arm64` / `nvim-macos-x86_64` | `nvim-linux-x86_64` |
+| Installer | `install-windows.ps1` (PowerShell 5.1+) | `install-unix.sh` (bash) | `install-unix.sh` (bash) |
+| File association | "Open with DSH Studio" | document types in the app bundle | `MimeType=` desktop entry |
+| Extra requirement | Windows Terminal recommended | Nerd Font for icon glyphs | FUSE for the Neovide AppImage |
+
+Windows ARM64 runs the x64 build under emulation. Linux on ARM has no official
+upstream Neovim tarball — set `DSHSTUDIO_USE_SYSTEM_NVIM=1` and use your
+distribution's Neovim 0.11+.
+
+Each platform's language servers, compilers and package-manager commands differ;
+the matrix is in [docs/INSTALL.md](docs/INSTALL.md) (see "Dependencies per platform").
 
 ## Requirements
 
@@ -152,8 +161,8 @@ launcher at them.
 ### Windows (x64)
 
 ```powershell
-git clone https://github.com/<you>/dsh-studio.git
-cd dsh-studio
+git clone https://github.com/nickedfrc/VimForge.git
+cd VimForge
 powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
 ```
 
@@ -167,8 +176,8 @@ Options: `-NoGui` (terminal only), `-NoPlugins` (skip the plugin download),
 ### macOS and Linux
 
 ```bash
-git clone https://github.com/<you>/dsh-studio.git
-cd dsh-studio
+git clone https://github.com/nickedfrc/VimForge.git
+cd VimForge
 ./scripts/install-unix.sh
 ```
 
@@ -186,7 +195,7 @@ If you already have Neovim 0.11+ and prefer to do it yourself:
 
 ```bash
 # Point Neovim at this configuration only, without touching ~/.config/nvim
-git clone https://github.com/<you>/dsh-studio.git
+git clone https://github.com/nickedfrc/VimForge.git
 export NVIM_APPNAME=dshstudio
 ln -s "$PWD/dsh-studio/nvim-deepseek-studio" ~/.config/dshstudio   # or copy it
 nvim --headless "+Lazy! sync" +qa

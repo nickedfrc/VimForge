@@ -401,9 +401,10 @@ end
 ---Pick a symbol across the whole project using the offline extractor.
 ---Runs in chunks so a large tree stays responsive.
 function M.project_symbols()
-  local scan = select(1, pcall(require, 'dshstudio.project.scan'))
-  local symbols = select(1, pcall(require, 'dshstudio.project.symbols'))
-  if not scan or not symbols then
+  -- pcall(require, m) returns (ok, module); select(1, ...) would take the boolean.
+  local ok_scan, scan = pcall(require, 'dshstudio.project.scan')
+  local ok_sym, symbols = pcall(require, 'dshstudio.project.symbols')
+  if not ok_scan or type(scan) ~= 'table' or not ok_sym or type(symbols) ~= 'table' then
     util().notify('project symbol support unavailable', vim.log.levels.ERROR)
     return
   end

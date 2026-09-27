@@ -63,9 +63,11 @@ local INDEXABLE = {
 function M.build_index(root, opts)
   opts = opts or {}
   local on_done = opts.on_done or function() end
-  local scan = select(1, pcall(require, 'dshstudio.project.scan'))
-  local symbols = select(1, pcall(require, 'dshstudio.project.symbols'))
-  if not scan or not symbols then
+  -- `pcall(require, x)` returns (ok, module); taking only the first value yields
+  -- the boolean and breaks every later call. Capture the module properly.
+  local ok_scan, scan = pcall(require, 'dshstudio.project.scan')
+  local ok_sym, symbols = pcall(require, 'dshstudio.project.symbols')
+  if not ok_scan or type(scan) ~= 'table' or not ok_sym or type(symbols) ~= 'table' then
     util().notify('project indexing unavailable (scan/symbols module missing)', vim.log.levels.ERROR)
     on_done(nil)
     return
@@ -325,7 +327,9 @@ end
 ---Index the project (or re-index) and render.
 ---@param force boolean|nil
 function M.refresh(force)
-  local scan = select(1, pcall(require, 'dshstudio.project.scan'))
+  -- pcall(require, m) returns (ok, module); select(1, ...) would take the boolean.
+  local ok_scan, scan = pcall(require, 'dshstudio.project.scan')
+  if not ok_scan or type(scan) ~= 'table' then scan = nil end
   local cwd = vim.fn.getcwd()
   local root = (scan and scan.detect_root and scan.detect_root(cwd)) or cwd
   if S.index and S.index.root == root and not force then
@@ -424,19 +428,18 @@ function M.pick()
     end)
   end
 
-  if S.index then
-    local scan = select(1, pcall(require, 'dshstudio.project.scan'))
-    local cwd = vim.fn.getcwd()
-    local root = (scan and scan.detect_root and scan.detect_root(cwd)) or cwd
-    if S.index.root == root then
-      choose()
-      return
-    end
-  end
-  -- Nothing cached for this root yet: index first, then present.
-  local scan = select(1, pcall(require, 'dshstudio.project.scan'))
+  -- Both branches need the project root; resolve it once.
+  -- pcall(require, m) returns (ok, module), so keep both values.
+  local ok_scan, scan = pcall(require, 'dshstudio.project.scan')
+  if not ok_scan or type(scan) ~= 'table' then scan = nil end
   local cwd = vim.fn.getcwd()
   local root = (scan and scan.detect_root and scan.detect_root(cwd)) or cwd
+
+  if S.index and S.index.root == root then
+    choose()
+    return
+  end
+  -- Nothing cached for this root yet: index first, then present.
   M.build_index(root, {
     on_done = function(index)
       S.index = index
@@ -449,6 +452,26 @@ end
 function M.status()
   if not S.index then return '' end
   return ('tree:%d'):format(S.index.symbol_count)
+end
+
+---Wait until the current indexing run finishes, for tests and scripts.
+---@param timeout_ms integer|nil
+---@return boolean finished
+function M.wait(timeout_ms)
+  if S.index then return true end
+  return vim.wait(timeout_ms or 30000, function() return S.index ~= nil end, 100)
+end
+
+---The cached index, or nil when nothing has been indexed yet.
+---@return table|nil
+function M.index()
+  return S.index
+end
+
+---Flat list of indexed symbols, for the report and for scripts.
+---@return table[]
+function M.symbols()
+  return M.symbol_list()
 end
 
 return M

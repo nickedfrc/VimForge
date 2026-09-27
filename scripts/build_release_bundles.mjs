@@ -540,7 +540,19 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $neovide = Join-Path $here 'neovide\\neovide.exe'
 if (-not (Test-Path $neovide)) { $neovide = Join-Path $here 'neovide.exe' }
 if (Test-Path $neovide) {
-  & $neovide @args
+  # Neovide finds Neovim through PATH. Without this it exits with
+  # "Failed to launch neovim runtime: ... program not found" - so both a PATH
+  # entry and the explicit --neovim-bin are set.
+  $env:DSHSTUDIO_ROOT = $here
+  $env:XDG_CONFIG_HOME = Join-Path $here 'config'
+  $env:XDG_DATA_HOME = Join-Path $here 'data'
+  $env:NVIM_APPNAME = 'dshstudio'
+  $nvimDir = Join-Path $here 'nvim\\bin'
+  $nvim = Join-Path $nvimDir 'nvim.exe'
+  $env:PATH = "$nvimDir;$env:PATH"
+  New-Item -ItemType Directory -Force -Path (Join-Path $here 'config') | Out-Null
+  New-Item -ItemType Directory -Force -Path (Join-Path $here 'data') | Out-Null
+  if (Test-Path $nvim) { & $neovide --neovim-bin $nvim @args } else { & $neovide @args }
 } else {
   Write-Host 'Neovide is not in this bundle; starting the terminal editor instead.'
   & (Join-Path $here 'vimforge.ps1') @args

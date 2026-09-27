@@ -101,6 +101,24 @@ setup('dshstudio.lsp', 'setup')
 setup('dshstudio.lang', 'setup')
 setup('dshstudio.keymaps', 'setup')
 
+-- Make the integration discoverable. Every DeepSeek feature sits behind a
+-- <leader> map or a :Dsh* command, and without this a first run shows an empty
+-- buffer with no hint that a panel, a model picker or a project report exist.
+-- Shown once per profile, only when no file was given, and suppressed by
+-- `vim.g.dshstudio_welcome = false`.
+do
+  local welcome = load_module('dshstudio.ui.welcome')
+  if welcome and welcome.maybe_show then
+    local ok, err = pcall(welcome.maybe_show)
+    if not ok then
+      vim.schedule(function()
+        vim.notify('welcome panel failed: ' .. tostring(err), vim.log.levels.DEBUG,
+          { title = 'DSH Studio' })
+      end)
+    end
+  end
+end
+
 -- Personal overrides load last, so they win over every default. `user.lua` is
 -- git-ignored and optional: copy `user.example.lua` to create it. Loading it by
 -- module name (rather than a fixed path) means a syntax error there is reported

@@ -40,8 +40,7 @@ end
 -- ---------------------------------------------------------------------------
 
 if sidebar then
-  define('DshToggle', function() sidebar.toggle() end, { desc = 'Toggle the DeepSeek panel' })
-  define('DshAsk', function(cmd)
+  define('DshToggle', function() sidebar.toggle() end, { desc = 'Toggle the DeepSeek panel' })  define('DshAsk', function(cmd)
     sidebar.ask(cmd.args ~= '' and cmd.args or nil)
   end, { nargs = '*', desc = 'Open the panel and prefill a question' })
   define('DshAskSelection', function() sidebar.ask_selection() end,
@@ -219,6 +218,24 @@ end
 -- ---------------------------------------------------------------------------
 -- Diagnostics and self-check
 -- ---------------------------------------------------------------------------
+
+define('DshWelcome', function()
+  local ok, welcome = pcall(require, 'dshstudio.ui.welcome')
+  if not ok then
+    notify('welcome module unavailable: ' .. tostring(welcome), vim.log.levels.ERROR)
+    return
+  end
+  welcome.show()
+end, { desc = 'Show the quick-reference panel (commands and keys)' })
+
+define('DshCheck', function()
+  local ok, doctor = pcall(require, 'dshstudio.core.doctor')
+  if not ok then
+    notify('doctor module unavailable: ' .. tostring(doctor), vim.log.levels.ERROR)
+    return
+  end
+  doctor.run()
+end, { desc = 'Check the DeepSeek integration layer by layer' })
 
 define('DshHealth', function()
   local report = {}

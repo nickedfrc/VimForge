@@ -213,49 +213,87 @@ the matrix is in [docs/INSTALL.md](docs/INSTALL.md) (see "Dependencies per platf
 
 ## Install
 
-### Windows (x64)
+### Download a ready-made bundle (recommended: nothing else to install)
 
-```powershell
+Every release ships a **self-contained archive per platform**. Each one already
+contains the configuration *and* the official Neovim build, so extracting it is
+enough to start editing — no Neovim install, no package manager, no network.
+
+| Platform | Download | Then |
+|---|---|---|
+| **Windows 10/11 x64** | [`VimForge-0.1.0-windows-x64.zip`](https://github.com/nickedfrc/VimForge/releases/latest/download/VimForge-0.1.0-windows-x64.zip) | extract it, then run **`install.cmd`** |
+| **macOS 11+** (Intel **and** Apple Silicon) | [`VimForge-0.1.0-macos-universal.tar.gz`](https://github.com/nickedfrc/VimForge/releases/latest/download/VimForge-0.1.0-macos-universal.tar.gz) | `tar xzf … && cd VimForge-* && ./install.sh` |
+| **Linux x86_64** | [`VimForge-0.1.0-linux-x86_64.tar.gz`](https://github.com/nickedfrc/VimForge/releases/latest/download/VimForge-0.1.0-linux-x86_64.tar.gz) | `tar xzf … && cd VimForge-* && ./install.sh` |
+
+All releases and checksums: **[github.com/nickedfrc/VimForge/releases](https://github.com/nickedfrc/VimForge/releases)**.
+Verify a download against `SHA256SUMS.txt` before running it.
+
+The macOS bundle carries **both** Neovim builds and the launcher picks the right
+one, so a single download covers Intel and Apple Silicon.
+
+Only the AI features need anything extra — Node.js 18+ and the harness CLI:
+
+```bash
+npm install -g @deepseek-ai/dsh
+```
+
+Then `:DshAuth` sets your API key and `<leader>dm` picks the model.
+
+### Or use the installers (clone the repository, they fetch Neovim)
+
+```bash
 git clone https://github.com/nickedfrc/VimForge.git
 cd VimForge
+```
+
+**Windows (x64)** — installs into `%LOCALAPPDATA%\DSHStudio`, adds `dshstudio` to
+your user `PATH`, registers "Open with DSH Studio" for source files, and creates a
+desktop shortcut for the GUI.
+
+```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
 ```
 
-Installs into `%LOCALAPPDATA%\DSHStudio`, adds `dshstudio` to your user `PATH`,
-creates an "Open with DSH Studio" entry for common source extensions, and adds a
-desktop shortcut for the GUI.
-
-Options: `-NoGui` (terminal only), `-NoPlugins` (skip the plugin download),
-`-Prefix <dir>`.
-
-### macOS and Linux
+**macOS and Linux** — installs into `~/.local/share/dshstudio`, creates
+`dshstudio` and `dshstudio-gui`, plus a `DSH Studio.app` bundle on macOS and a
+`.desktop` entry on Linux.
 
 ```bash
-git clone https://github.com/nickedfrc/VimForge.git
-cd VimForge
 ./scripts/install-unix.sh
 ```
 
-Installs into `~/.local/share/dshstudio`, creates `dshstudio` and `dshstudio-gui`,
-plus a `DSH Studio.app` bundle on macOS and a `.desktop` entry on Linux.
+Options: Windows `-NoGui`, `-NoPlugins`, `-Prefix <dir>`; Unix `--no-gui`,
+`--no-plugins`, `--prefix DIR`, `--appimage`. Both finish by running the offline
+self-test and reporting whether the configuration loads.
 
-Options: `--no-gui`, `--no-plugins`, `--prefix DIR`, `--appimage`.
-
-Both installers finish by running the **offline self-test** and reporting whether
-the configuration loads.
+Both routes are described in full, with the per-platform dependency matrix, in
+[docs/INSTALL.md](docs/INSTALL.md).
 
 ### Manual install (any platform)
 
-If you already have Neovim 0.11+ and prefer to do it yourself:
+If you already have Neovim 0.11+ and prefer to do it yourself, give this
+configuration its own application name so your existing setup is untouched:
 
 ```bash
-# Point Neovim at this configuration only, without touching ~/.config/nvim
-git clone https://github.com/nickedfrc/VimForge.git
 export NVIM_APPNAME=dshstudio
-ln -s "$PWD/dsh-studio/nvim-deepseek-studio" ~/.config/dshstudio   # or copy it
+mkdir -p ~/.config/dshstudio
+cp -R nvim-deepseek-studio/. ~/.config/dshstudio/
 nvim --headless "+Lazy! sync" +qa
 nvim
 ```
+
+On Windows the config directory is `%LOCALAPPDATA%\dshstudio`.
+
+### Building the bundles yourself
+
+```bash
+node scripts/build_release_bundles.mjs dist   # stage: config + official Neovim
+node scripts/make_archives.mjs dist           # zip / tar.gz + SHA256SUMS.txt
+node scripts/verify_archives.mjs dist         # required paths, modes, checksums
+```
+
+The archive writers use only Node built-ins, so no `tar` or `zip` is required, and
+`verify_archives.mjs` checks each archive the way a user would see it.
 
 ## First run
 

@@ -180,11 +180,41 @@ Windows ARM64 用 x64 版本（系统转译运行）。Linux ARM64 上游没有�
 
 ## 安装
 
-### Windows x64
+### 下载现成安装包（推荐：不需要再装别的东西）
 
-```powershell
+每个 Release 都提供**三平台各自的自包含压缩包**。包内已经带了本配置**和该平台官方 Neovim**，
+解压即可开始编辑——不用另装 Neovim、不用包管理器、不需要联网。
+
+| 平台 | 下载 | 然后 |
+|---|---|---|
+| **Windows 10/11 x64** | [`VimForge-0.1.0-windows-x64.zip`](https://github.com/nickedfrc/VimForge/releases/latest/download/VimForge-0.1.0-windows-x64.zip) | 解压后运行 **`install.cmd`** |
+| **macOS 11+**（Intel **与** Apple 芯片） | [`VimForge-0.1.0-macos-universal.tar.gz`](https://github.com/nickedfrc/VimForge/releases/latest/download/VimForge-0.1.0-macos-universal.tar.gz) | `tar xzf … && cd VimForge-* && ./install.sh` |
+| **Linux x86_64** | [`VimForge-0.1.0-linux-x86_64.tar.gz`](https://github.com/nickedfrc/VimForge/releases/latest/download/VimForge-0.1.0-linux-x86_64.tar.gz) | `tar xzf … && cd VimForge-* && ./install.sh` |
+
+全部版本与校验和：**[github.com/nickedfrc/VimForge/releases](https://github.com/nickedfrc/VimForge/releases)**。
+运行前可用 `SHA256SUMS.txt` 校验下载是否完整。
+
+macOS 包里**同时包含** Intel 与 Apple 芯片两个 Neovim 构建，启动器会自动选择，
+所以一次下载通吃两种机型。
+
+只有 AI 功能需要额外依赖——Node.js 18+ 和 Harness CLI：
+
+```bash
+npm install -g @deepseek-ai/dsh
+```
+
+之后 `:DshAuth` 填 API Key，`<leader>dm` 选模型。
+
+### 或者用安装脚本（克隆仓库，脚本自动下载 Neovim）
+
+```bash
 git clone https://github.com/nickedfrc/VimForge.git
 cd VimForge
+```
+
+**Windows x64**
+
+```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
 ```
 
